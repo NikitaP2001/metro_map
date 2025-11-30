@@ -95,6 +95,19 @@ body {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     z-index: 100;
     max-width: 300px;
+    transition: transform 0.3s ease, height 0.3s ease;
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.properties-panel.collapsed {
+    height: auto;
+    overflow: hidden;
+}
+
+.properties-panel.collapsed .form-group,
+.properties-panel.collapsed .button-group {
+    display: none;
 }
 
 .properties-panel h3 {

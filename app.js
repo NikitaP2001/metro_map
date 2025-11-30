@@ -213,6 +213,7 @@ function setupEventListeners() {
     // Panel collapse
     document.getElementById('toggle-panel').addEventListener('click', toggleControlsPanel);
     document.getElementById('show-panel').addEventListener('click', toggleControlsPanel);
+    document.getElementById('toggle-properties-panel').addEventListener('click', togglePropertiesPanel);
     
     // Range input updates
     document.getElementById('line-width').addEventListener('input', (e) => {
@@ -230,9 +231,23 @@ function setupMapClickHandlers() {
         showFeaturePopup(e);
     });
     
+    // Touch on lines for mobile
+    map.on('touchend', 'custom-routes-lines-hitarea', (e) => {
+        if (e.originalEvent.touches.length === 0) {
+            showFeaturePopup(e);
+        }
+    });
+    
     // Click on polygons
     map.on('click', 'custom-routes-polygons', (e) => {
         showFeaturePopup(e);
+    });
+    
+    // Touch on polygons for mobile
+    map.on('touchend', 'custom-routes-polygons', (e) => {
+        if (e.originalEvent.touches.length === 0) {
+            showFeaturePopup(e);
+        }
     });
     
     // Hover effects (using the wider hit area)
@@ -257,7 +272,29 @@ function setupMapClickHandlers() {
 function showFeaturePopup(e) {
     const feature = e.features[0];
     const props = feature.properties;
-    const featureId = feature.id;
+    
+    // Try multiple ways to get the feature ID
+    let featureId = feature.id || props.id || props.featureId;
+    
+    // If still no ID, try to find by matching properties
+    if (!featureId) {
+        const matchedFeature = customRoutes.find(f => {
+            return f.properties.name === props.name && 
+                   f.properties.description === props.description &&
+                   (f.properties.stroke === props.stroke || f.properties.fill === props.fill);
+        });
+        featureId = matchedFeature ? matchedFeature.id : null;
+    }
+    
+    if (!featureId) {
+        console.error('Could not find feature ID');
+        console.log('Feature:', feature);
+        console.log('Custom routes:', customRoutes);
+        alert('Error: Could not identify this route. Please try again.');
+        return;
+    }
+    
+    console.log('Found feature ID:', featureId);
     
     let html = `<h4>${props.name || 'Unnamed Route'}</h4>`;
     
@@ -278,8 +315,8 @@ function showFeaturePopup(e) {
     }
     
     html += '<div style="margin-top: 10px; display: flex; gap: 5px;">';
-    html += `<button onclick="editExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer;">Edit</button>`;
-    html += `<button onclick="deleteExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer;">Delete</button>`;
+    html += `<button onclick="window.editExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer;">Edit</button>`;
+    html += `<button onclick="window.deleteExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer;">Delete</button>`;
     html += '</div>';
     
     new maplibregl.Popup()
@@ -305,6 +342,8 @@ function toggleCurveMode() {
 
 // Edit existing route (called from popup)
 window.editExistingRoute = function(featureId) {
+    console.log('Attempting to edit route:', featureId);
+    
     // Close all popups
     const popups = document.getElementsByClassName('maplibregl-popup');
     while(popups[0]) {
@@ -313,7 +352,14 @@ window.editExistingRoute = function(featureId) {
     
     // Find the feature in customRoutes
     const feature = customRoutes.find(f => f.id === featureId);
-    if (!feature) return;
+    if (!feature) {
+        console.error('Feature not found:', featureId);
+        console.log('Available routes:', customRoutes.map(r => r.id));
+        alert('Error: Could not find this route. Please try again.');
+        return;
+    }
+    
+    console.log('Found feature to edit:', feature);
     
     // Set current feature ID
     currentFeatureId = featureId;
@@ -325,7 +371,9 @@ window.editExistingRoute = function(featureId) {
     
     // For LineStrings, enable interactive curve editing
     if (feature.geometry.type === 'LineString') {
-        // Store original control points
+        // Store control points from the saved feature
+        // If the feature has many points (smoothed), we need to extract control points
+        // For simplicity, we'll use all coordinates as control points
         editPoints = feature.geometry.coordinates.map(c => [...c]);
         
         // Enable interactive editing mode
@@ -333,11 +381,21 @@ window.editExistingRoute = function(featureId) {
     }
     
     // Show properties panel with existing values
-    showPropertiesPanel(feature);
+    document.getElementById('properties-panel').style.display = 'block';
+    document.getElementById('line-name').value = feature.properties.name || '';
+    document.getElementById('line-color').value = feature.properties.stroke || feature.properties.fill || '#ff0000';
+    document.getElementById('line-width').value = feature.properties['stroke-width'] || 6;
+    document.getElementById('width-value').textContent = feature.properties['stroke-width'] || 6;
+    document.getElementById('line-opacity').value = feature.properties['stroke-opacity'] || feature.properties['fill-opacity'] || 1;
+    document.getElementById('opacity-value').textContent = feature.properties['stroke-opacity'] || feature.properties['fill-opacity'] || 1;
+    document.getElementById('description').value = feature.properties.description || '';
 };
 
 // Delete existing route (called from popup)
 window.deleteExistingRoute = function(featureId) {
+    console.log('Attempting to delete route:', featureId);
+    console.log('Current routes before delete:', customRoutes.length);
+    
     // Close all popups
     const popups = document.getElementsByClassName('maplibregl-popup');
     while(popups[0]) {
@@ -345,9 +403,25 @@ window.deleteExistingRoute = function(featureId) {
     }
     
     if (confirm('Are you sure you want to delete this route?')) {
+        // Remove from customRoutes array
+        const beforeLength = customRoutes.length;
         customRoutes = customRoutes.filter(f => f.id !== featureId);
+        const afterLength = customRoutes.length;
+        
+        console.log('Routes after filter:', afterLength, 'Deleted:', beforeLength - afterLength);
+        
+        // Save to localStorage
         saveRoutesToStorage();
+        
+        // Refresh map display
         refreshCustomRoutes();
+        
+        if (beforeLength > afterLength) {
+            console.log('Route deleted successfully');
+        } else {
+            console.error('Route was not found for deletion');
+            alert('Error: Could not delete route. ID mismatch.');
+        }
     }
 };
 
@@ -516,10 +590,13 @@ function enableCurveEditing() {
     // Update display
     updateCurveDisplay();
     
-    // Add event listeners for dragging
+    // Add event listeners for dragging (mouse and touch)
     map.on('mousedown', tempPointsLayerId, onPointMouseDown);
+    map.on('touchstart', tempPointsLayerId, onPointTouchStart);
     map.on('mousemove', onPointMouseMove);
+    map.on('touchmove', onPointTouchMove);
     map.on('mouseup', onPointMouseUp);
+    map.on('touchend', onPointTouchEnd);
     
     // Change cursor on hover
     map.on('mouseenter', tempPointsLayerId, () => {
@@ -540,8 +617,11 @@ function disableCurveEditing() {
     
     // Remove event listeners
     map.off('mousedown', tempPointsLayerId, onPointMouseDown);
+    map.off('touchstart', tempPointsLayerId, onPointTouchStart);
     map.off('mousemove', onPointMouseMove);
+    map.off('touchmove', onPointTouchMove);
     map.off('mouseup', onPointMouseUp);
+    map.off('touchend', onPointTouchEnd);
     map.off('mouseenter', tempPointsLayerId);
     map.off('mouseleave', tempPointsLayerId);
     
@@ -672,6 +752,87 @@ function onPointMouseUp() {
     }
 }
 
+// Touch start on point
+function onPointTouchStart(e) {
+    e.preventDefault();
+    
+    if (e.features.length > 0) {
+        draggedPointIndex = e.features[0].properties.index;
+        // Save original positions at drag start
+        dragStartPoints = editPoints.map(c => [...c]);
+        map.dragPan.disable();
+    }
+}
+
+// Touch move
+function onPointTouchMove(e) {
+    if (draggedPointIndex === null || !dragStartPoints) return;
+    
+    e.preventDefault();
+    
+    const touch = e.originalEvent.touches[0];
+    const point = map.unproject([touch.clientX, touch.clientY]);
+    const newCoords = [point.lng, point.lat];
+    
+    // Calculate displacement from original position at drag start
+    const oldCoords = dragStartPoints[draggedPointIndex];
+    const dx = newCoords[0] - oldCoords[0];
+    const dy = newCoords[1] - oldCoords[1];
+    
+    // Update the dragged point
+    editPoints[draggedPointIndex] = newCoords;
+    
+    // Move adjacent points like a chain - each point moves based on its distance
+    const moveRadius = 3; // How many points on each side to affect
+    const isFirstPoint = draggedPointIndex === 0;
+    const isLastPoint = draggedPointIndex === editPoints.length - 1;
+    
+    // Process points before (moving backwards)
+    if (!isFirstPoint) {
+        for (let offset = 1; offset <= moveRadius; offset++) {
+            const idx = draggedPointIndex - offset;
+            if (idx < 0) break;
+            
+            // Lock first point - it should never move unless directly dragged
+            if (idx === 0) break;
+            
+            // Calculate influence: exponential falloff creates more natural chain effect
+            const influence = Math.pow(0.5, offset);
+            
+            editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+            editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+        }
+    }
+    
+    // Process points after (moving forwards)
+    if (!isLastPoint) {
+        for (let offset = 1; offset <= moveRadius; offset++) {
+            const idx = draggedPointIndex + offset;
+            if (idx >= editPoints.length) break;
+            
+            // Lock last point - it should never move unless directly dragged
+            if (idx === editPoints.length - 1) break;
+            
+            // Calculate influence: exponential falloff
+            const influence = Math.pow(0.5, offset);
+            
+            editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+            editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+        }
+    }
+    
+    updateCurveDisplay();
+}
+
+// Touch end
+function onPointTouchEnd() {
+    if (draggedPointIndex !== null) {
+        draggedPointIndex = null;
+        dragStartPoints = null;
+        map.dragPan.enable();
+    }
+}
+
 // Handle draw update
 function handleDrawUpdate(e) {
     const feature = e.features[0];
@@ -736,12 +897,23 @@ function saveProperties() {
         disableCurveEditing();
     } else {
         const drawnFeature = draw.get(currentFeatureId);
-        if (!drawnFeature) return;
-        geometry = drawnFeature.geometry;
-        
-        // Apply curve smoothing if enabled for LineStrings
-        if (curveMode && geometry.type === 'LineString') {
-            geometry.coordinates = smoothLineString(geometry.coordinates);
+        if (!drawnFeature) {
+            // If no drawn feature, we might be editing an existing route
+            // Try to find it in customRoutes
+            const existingFeature = customRoutes.find(f => f.id === currentFeatureId);
+            if (existingFeature) {
+                geometry = existingFeature.geometry;
+            } else {
+                console.error('No feature found to save');
+                return;
+            }
+        } else {
+            geometry = drawnFeature.geometry;
+            
+            // Apply curve smoothing if enabled for LineStrings
+            if (curveMode && geometry.type === 'LineString') {
+                geometry.coordinates = smoothLineString(geometry.coordinates);
+            }
         }
     }
     
@@ -750,6 +922,8 @@ function saveProperties() {
         type: 'Feature',
         geometry: geometry,
         properties: {
+            id: currentFeatureId,
+            featureId: currentFeatureId,
             name: name,
             description: description
         }
@@ -765,8 +939,10 @@ function saveProperties() {
         feature.properties['fill-opacity'] = opacity;
     }
     
-    // Remove from draw layer
-    draw.delete(currentFeatureId);
+    // Remove from draw layer if it exists
+    if (draw.get(currentFeatureId)) {
+        draw.delete(currentFeatureId);
+    }
     
     // Add to custom routes
     const existingIndex = customRoutes.findIndex(f => f.id === currentFeatureId);
@@ -907,6 +1083,17 @@ function toggleControlsPanel() {
     
     button.textContent = isCollapsed ? '▶' : '◀';
     showButton.style.display = isCollapsed ? 'block' : 'none';
+}
+
+// Toggle properties panel
+function togglePropertiesPanel() {
+    const panel = document.getElementById('properties-panel');
+    const button = document.getElementById('toggle-properties-panel');
+    
+    panel.classList.toggle('collapsed');
+    const isCollapsed = panel.classList.contains('collapsed');
+    
+    button.textContent = isCollapsed ? '▼' : '▲';
 }
 
 // Hide loading indicator

@@ -60,7 +60,10 @@
     
     <!-- Properties Panel (shown when drawing) -->
     <div id="properties-panel" class="properties-panel" style="display: none;">
-        <h3>Route Properties</h3>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h3 style="margin: 0;">Route Properties</h3>
+            <button id="toggle-properties-panel" class="btn-collapse" style="margin: 0;">▼</button>
+        </div>
         
         <div class="form-group">
             <label for="line-name">Line Name:</label>

@@ -8,6 +8,12 @@ let editMode = false;
 let currentFeatureId = null;
 let customRoutes = [];
 let curveMode = false;
+let isEditingCurve = false;
+let editPoints = [];
+let draggedPointIndex = null;
+let dragStartPoints = null;
+let tempLayerId = 'temp-edit-layer';
+let tempPointsLayerId = 'temp-edit-points';
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', () => {
@@ -67,6 +73,19 @@ function initializeMap() {
                 'line-color': ['get', 'stroke'],
                 'line-width': ['get', 'stroke-width'],
                 'line-opacity': ['get', 'stroke-opacity']
+            }
+        });
+        
+        // Add invisible wider line layer for easier clicking
+        map.addLayer({
+            id: 'custom-routes-lines-hitarea',
+            type: 'line',
+            source: 'custom-routes',
+            filter: ['==', '$type', 'LineString'],
+            paint: {
+                'line-color': 'transparent',
+                'line-width': 20,
+                'line-opacity': 0
             }
         });
         
@@ -185,6 +204,7 @@ function setupEventListeners() {
     // Export/Import
     document.getElementById('export-geojson').addEventListener('click', exportGeoJSON);
     document.getElementById('import-file').addEventListener('change', handleImport);
+    document.getElementById('clear-all-routes').addEventListener('click', clearAllRoutes);
     
     // Properties panel
     document.getElementById('save-properties').addEventListener('click', saveProperties);
@@ -192,6 +212,7 @@ function setupEventListeners() {
     
     // Panel collapse
     document.getElementById('toggle-panel').addEventListener('click', toggleControlsPanel);
+    document.getElementById('show-panel').addEventListener('click', toggleControlsPanel);
     
     // Range input updates
     document.getElementById('line-width').addEventListener('input', (e) => {
@@ -204,8 +225,8 @@ function setupEventListeners() {
 
 // Setup map click handlers
 function setupMapClickHandlers() {
-    // Click on lines
-    map.on('click', 'custom-routes-lines', (e) => {
+    // Click on lines (using the wider hit area)
+    map.on('click', 'custom-routes-lines-hitarea', (e) => {
         showFeaturePopup(e);
     });
     
@@ -214,12 +235,12 @@ function setupMapClickHandlers() {
         showFeaturePopup(e);
     });
     
-    // Hover effects
-    map.on('mouseenter', 'custom-routes-lines', () => {
+    // Hover effects (using the wider hit area)
+    map.on('mouseenter', 'custom-routes-lines-hitarea', () => {
         map.getCanvas().style.cursor = 'pointer';
     });
     
-    map.on('mouseleave', 'custom-routes-lines', () => {
+    map.on('mouseleave', 'custom-routes-lines-hitarea', () => {
         map.getCanvas().style.cursor = '';
     });
     
@@ -236,6 +257,7 @@ function setupMapClickHandlers() {
 function showFeaturePopup(e) {
     const feature = e.features[0];
     const props = feature.properties;
+    const featureId = feature.id;
     
     let html = `<h4>${props.name || 'Unnamed Route'}</h4>`;
     
@@ -254,6 +276,11 @@ function showFeaturePopup(e) {
         html += `<span class="property-value">${props['stroke-width']}px</span>`;
         html += '</div>';
     }
+    
+    html += '<div style="margin-top: 10px; display: flex; gap: 5px;">';
+    html += `<button onclick="editExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer;">Edit</button>`;
+    html += `<button onclick="deleteExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer;">Delete</button>`;
+    html += '</div>';
     
     new maplibregl.Popup()
         .setLngLat(e.lngLat)
@@ -275,6 +302,54 @@ function toggleCurveMode() {
         curveIndicator.style.display = 'none';
     }
 }
+
+// Edit existing route (called from popup)
+window.editExistingRoute = function(featureId) {
+    // Close all popups
+    const popups = document.getElementsByClassName('maplibregl-popup');
+    while(popups[0]) {
+        popups[0].remove();
+    }
+    
+    // Find the feature in customRoutes
+    const feature = customRoutes.find(f => f.id === featureId);
+    if (!feature) return;
+    
+    // Set current feature ID
+    currentFeatureId = featureId;
+    
+    // Enable edit mode if not already enabled
+    if (!editMode) {
+        toggleEditMode();
+    }
+    
+    // For LineStrings, enable interactive curve editing
+    if (feature.geometry.type === 'LineString') {
+        // Store original control points
+        editPoints = feature.geometry.coordinates.map(c => [...c]);
+        
+        // Enable interactive editing mode
+        enableCurveEditing();
+    }
+    
+    // Show properties panel with existing values
+    showPropertiesPanel(feature);
+};
+
+// Delete existing route (called from popup)
+window.deleteExistingRoute = function(featureId) {
+    // Close all popups
+    const popups = document.getElementsByClassName('maplibregl-popup');
+    while(popups[0]) {
+        popups[0].remove();
+    }
+    
+    if (confirm('Are you sure you want to delete this route?')) {
+        customRoutes = customRoutes.filter(f => f.id !== featureId);
+        saveRoutesToStorage();
+        refreshCustomRoutes();
+    }
+};
 
 // Toggle edit mode
 function toggleEditMode() {
@@ -366,15 +441,235 @@ function handleDrawCreate(e) {
     const feature = e.features[0];
     currentFeatureId = feature.id;
     
-    // Apply curve smoothing if enabled and feature is a LineString
-    if (curveMode && feature.geometry.type === 'LineString') {
-        feature.geometry.coordinates = smoothLineString(feature.geometry.coordinates);
-        draw.delete(feature.id);
-        const newFeature = draw.add(feature)[0];
-        currentFeatureId = newFeature;
+    // For LineStrings, enable interactive curve editing
+    if (feature.geometry.type === 'LineString') {
+        // Store original control points
+        editPoints = feature.geometry.coordinates.map(c => [...c]);
+        
+        // Apply curve smoothing if enabled
+        if (curveMode) {
+            feature.geometry.coordinates = smoothLineString(editPoints);
+            draw.delete(feature.id);
+            const newFeature = draw.add(feature)[0];
+            currentFeatureId = newFeature;
+        }
+        
+        // Enable interactive editing mode
+        enableCurveEditing();
     }
     
     showPropertiesPanel(feature);
+}
+
+// Enable interactive curve editing
+function enableCurveEditing() {
+    if (isEditingCurve) return;
+    isEditingCurve = true;
+    
+    // Hide the draw feature temporarily
+    if (draw.get(currentFeatureId)) {
+        draw.delete(currentFeatureId);
+    }
+    
+    // Add temporary layers for editing
+    if (!map.getSource(tempLayerId)) {
+        map.addSource(tempLayerId, {
+            type: 'geojson',
+            data: {
+                type: 'FeatureCollection',
+                features: []
+            }
+        });
+        
+        map.addLayer({
+            id: tempLayerId,
+            type: 'line',
+            source: tempLayerId,
+            paint: {
+                'line-color': '#3498db',
+                'line-width': 6,
+                'line-opacity': 0.8
+            }
+        });
+        
+        map.addSource(tempPointsLayerId, {
+            type: 'geojson',
+            data: {
+                type: 'FeatureCollection',
+                features: []
+            }
+        });
+        
+        map.addLayer({
+            id: tempPointsLayerId,
+            type: 'circle',
+            source: tempPointsLayerId,
+            paint: {
+                'circle-radius': 8,
+                'circle-color': '#ffffff',
+                'circle-stroke-color': '#3498db',
+                'circle-stroke-width': 3
+            }
+        });
+    }
+    
+    // Update display
+    updateCurveDisplay();
+    
+    // Add event listeners for dragging
+    map.on('mousedown', tempPointsLayerId, onPointMouseDown);
+    map.on('mousemove', onPointMouseMove);
+    map.on('mouseup', onPointMouseUp);
+    
+    // Change cursor on hover
+    map.on('mouseenter', tempPointsLayerId, () => {
+        map.getCanvas().style.cursor = 'grab';
+    });
+    
+    map.on('mouseleave', tempPointsLayerId, () => {
+        if (draggedPointIndex === null) {
+            map.getCanvas().style.cursor = '';
+        }
+    });
+}
+
+// Disable curve editing
+function disableCurveEditing() {
+    if (!isEditingCurve) return;
+    isEditingCurve = false;
+    
+    // Remove event listeners
+    map.off('mousedown', tempPointsLayerId, onPointMouseDown);
+    map.off('mousemove', onPointMouseMove);
+    map.off('mouseup', onPointMouseUp);
+    map.off('mouseenter', tempPointsLayerId);
+    map.off('mouseleave', tempPointsLayerId);
+    
+    // Clear temporary layers
+    if (map.getSource(tempLayerId)) {
+        map.getSource(tempLayerId).setData({
+            type: 'FeatureCollection',
+            features: []
+        });
+    }
+    if (map.getSource(tempPointsLayerId)) {
+        map.getSource(tempPointsLayerId).setData({
+            type: 'FeatureCollection',
+            features: []
+        });
+    }
+    
+    // Reset drag state
+    draggedPointIndex = null;
+    dragStartPoints = null;
+    map.getCanvas().style.cursor = '';
+}
+
+// Update curve display
+function updateCurveDisplay() {
+    // Update line
+    const lineCoords = curveMode ? smoothLineString(editPoints) : editPoints;
+    map.getSource(tempLayerId).setData({
+        type: 'Feature',
+        geometry: {
+            type: 'LineString',
+            coordinates: lineCoords
+        }
+    });
+    
+    // Update control points
+    const pointFeatures = editPoints.map((coord, index) => ({
+        type: 'Feature',
+        properties: { index },
+        geometry: {
+            type: 'Point',
+            coordinates: coord
+        }
+    }));
+    
+    map.getSource(tempPointsLayerId).setData({
+        type: 'FeatureCollection',
+        features: pointFeatures
+    });
+}
+
+// Mouse down on point
+function onPointMouseDown(e) {
+    e.preventDefault();
+    
+    if (e.features.length > 0) {
+        draggedPointIndex = e.features[0].properties.index;
+        // Save original positions at drag start
+        dragStartPoints = editPoints.map(c => [...c]);
+        map.getCanvas().style.cursor = 'grabbing';
+        map.dragPan.disable();
+    }
+}
+
+// Mouse move
+function onPointMouseMove(e) {
+    if (draggedPointIndex === null || !dragStartPoints) return;
+    
+    const newCoords = [e.lngLat.lng, e.lngLat.lat];
+    
+    // Calculate displacement from original position at drag start
+    const oldCoords = dragStartPoints[draggedPointIndex];
+    const dx = newCoords[0] - oldCoords[0];
+    const dy = newCoords[1] - oldCoords[1];
+    
+    // Update the dragged point
+    editPoints[draggedPointIndex] = newCoords;
+    
+    // Move adjacent points like a chain - each point moves based on its distance
+    const moveRadius = 3; // How many points on each side to affect
+    const isFirstPoint = draggedPointIndex === 0;
+    const isLastPoint = draggedPointIndex === editPoints.length - 1;
+    
+    // Process points before (moving backwards)
+    if (!isFirstPoint) {
+        for (let offset = 1; offset <= moveRadius; offset++) {
+            const idx = draggedPointIndex - offset;
+            if (idx < 0) break;
+            
+            // Lock first point - it should never move unless directly dragged
+            if (idx === 0) break;
+            
+            // Calculate influence: exponential falloff creates more natural chain effect
+            const influence = Math.pow(0.5, offset); // 0.5, 0.25, 0.125...
+            
+            editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+            editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+        }
+    }
+    
+    // Process points after (moving forwards)
+    if (!isLastPoint) {
+        for (let offset = 1; offset <= moveRadius; offset++) {
+            const idx = draggedPointIndex + offset;
+            if (idx >= editPoints.length) break;
+            
+            // Lock last point - it should never move unless directly dragged
+            if (idx === editPoints.length - 1) break;
+            
+            // Calculate influence: exponential falloff
+            const influence = Math.pow(0.5, offset);
+            
+            editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+            editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+        }
+    }
+    
+    updateCurveDisplay();
+}
+
+// Mouse up
+function onPointMouseUp() {
+    if (draggedPointIndex !== null) {
+        draggedPointIndex = null;
+        dragStartPoints = null;
+        map.getCanvas().style.cursor = 'grab';
+        map.dragPan.enable();
+    }
 }
 
 // Handle draw update
@@ -423,36 +718,49 @@ function showPropertiesPanel(feature) {
 
 // Save properties
 function saveProperties() {
-    const drawnFeature = draw.get(currentFeatureId);
-    if (!drawnFeature) return;
-    
     const name = document.getElementById('line-name').value;
     const color = document.getElementById('line-color').value;
     const width = parseInt(document.getElementById('line-width').value);
     const opacity = parseFloat(document.getElementById('line-opacity').value);
     const description = document.getElementById('description').value;
     
+    let geometry;
+    
+    // Use edited points if in curve editing mode
+    if (isEditingCurve && editPoints.length > 0) {
+        const coords = curveMode ? smoothLineString(editPoints) : editPoints;
+        geometry = {
+            type: 'LineString',
+            coordinates: coords
+        };
+        disableCurveEditing();
+    } else {
+        const drawnFeature = draw.get(currentFeatureId);
+        if (!drawnFeature) return;
+        geometry = drawnFeature.geometry;
+        
+        // Apply curve smoothing if enabled for LineStrings
+        if (curveMode && geometry.type === 'LineString') {
+            geometry.coordinates = smoothLineString(geometry.coordinates);
+        }
+    }
+    
     const feature = {
         id: currentFeatureId,
         type: 'Feature',
-        geometry: drawnFeature.geometry,
+        geometry: geometry,
         properties: {
             name: name,
             description: description
         }
     };
     
-    // Apply curve smoothing if enabled for LineStrings
-    if (curveMode && feature.geometry.type === 'LineString') {
-        feature.geometry.coordinates = smoothLineString(feature.geometry.coordinates);
-    }
-    
     // Add type-specific properties
-    if (drawnFeature.geometry.type === 'LineString') {
+    if (geometry.type === 'LineString') {
         feature.properties.stroke = color;
         feature.properties['stroke-width'] = width;
         feature.properties['stroke-opacity'] = opacity;
-    } else if (drawnFeature.geometry.type === 'Polygon') {
+    } else if (geometry.type === 'Polygon') {
         feature.properties.fill = color;
         feature.properties['fill-opacity'] = opacity;
     }
@@ -479,12 +787,18 @@ function saveProperties() {
 function cancelProperties() {
     document.getElementById('properties-panel').style.display = 'none';
     
+    // Disable curve editing if active
+    if (isEditingCurve) {
+        disableCurveEditing();
+    }
+    
     // Remove drawn feature if not saved
     if (currentFeatureId) {
         draw.delete(currentFeatureId);
     }
     
     currentFeatureId = null;
+    editPoints = [];
     
     // Reset form
     document.getElementById('line-name').value = '';
@@ -572,13 +886,27 @@ function handleImport(e) {
     e.target.value = '';
 }
 
+// Clear all routes
+function clearAllRoutes() {
+    if (confirm('Are you sure you want to delete ALL routes? This cannot be undone!')) {
+        customRoutes = [];
+        localStorage.removeItem('customRoutes');
+        refreshCustomRoutes();
+        alert('All routes cleared successfully!');
+    }
+}
+
 // Toggle controls panel
 function toggleControlsPanel() {
     const panel = document.querySelector('.controls-panel');
     const button = document.getElementById('toggle-panel');
+    const showButton = document.getElementById('show-panel');
     
     panel.classList.toggle('collapsed');
-    button.textContent = panel.classList.contains('collapsed') ? '▶' : '◀';
+    const isCollapsed = panel.classList.contains('collapsed');
+    
+    button.textContent = isCollapsed ? '▶' : '◀';
+    showButton.style.display = isCollapsed ? 'block' : 'none';
 }
 
 // Hide loading indicator

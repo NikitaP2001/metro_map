@@ -47,12 +47,16 @@
                 Import GeoJSON
                 <input type="file" id="import-file" accept=".geojson,.json" style="display: none;">
             </label>
+            <button id="clear-all-routes" class="btn btn-danger">Clear All Routes</button>
         </div>
         
         <div class="control-group">
             <button id="toggle-panel" class="btn-collapse">◀</button>
         </div>
     </div>
+    
+    <!-- Show Panel Button (visible when panel is collapsed) -->
+    <button id="show-panel" class="show-panel-btn" style="display: none;">▶</button>
     
     <!-- Properties Panel (shown when drawing) -->
     <div id="properties-panel" class="properties-panel" style="display: none;">

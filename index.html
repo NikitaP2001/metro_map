@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Metro Map - Custom Routes</title>
+    
+    <!-- MapLibre GL JS -->
+    <link href="https://unpkg.com/maplibre-gl@5.3.0/dist/maplibre-gl.css" rel="stylesheet">
+    <script src="https://unpkg.com/maplibre-gl@5.3.0/dist/maplibre-gl.js"></script>
+    
+    <!-- PMTiles -->
+    <script src="https://unpkg.com/pmtiles@3.0.7/dist/pmtiles.js"></script>
+    
+    <!-- MapLibre GL Draw (for editing) -->
+    <link href="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.css" rel="stylesheet">
+    <script src="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.js"></script>
+    
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="map"></div>
+    
+    <!-- Controls Panel -->
+    <div id="controls-panel" class="controls-panel">
+        <h3>Metro Map Editor</h3>
+        
+        <div class="control-group">
+            <button id="toggle-edit-mode" class="btn btn-primary">
+                <span id="edit-mode-text">Enable Edit Mode</span>
+            </button>
+        </div>
+        
+        <div class="control-group" id="edit-controls" style="display: none;">
+            <button id="toggle-curve-mode" class="btn">
+                <span id="curve-mode-text">Smooth Curves: OFF</span>
+                <span id="curve-indicator" style="display: none; color: #2ecc71; font-weight: bold;"> ✓</span>
+            </button>
+            <button id="draw-line" class="btn">Draw Line</button>
+            <button id="draw-polygon" class="btn">Draw Station</button>
+            <button id="delete-feature" class="btn btn-danger">Delete</button>
+        </div>
+        
+        <div class="control-group">
+            <button id="export-geojson" class="btn">Export GeoJSON</button>
+            <label for="import-file" class="btn">
+                Import GeoJSON
+                <input type="file" id="import-file" accept=".geojson,.json" style="display: none;">
+            </label>
+        </div>
+        
+        <div class="control-group">
+            <button id="toggle-panel" class="btn-collapse">◀</button>
+        </div>
+    </div>
+    
+    <!-- Properties Panel (shown when drawing) -->
+    <div id="properties-panel" class="properties-panel" style="display: none;">
+        <h3>Route Properties</h3>
+        
+        <div class="form-group">
+            <label for="line-name">Line Name:</label>
+            <input type="text" id="line-name" placeholder="e.g., Line 1">
+        </div>
+        
+        <div class="form-group">
+            <label for="line-color">Color:</label>
+            <input type="color" id="line-color" value="#ff0000">
+        </div>
+        
+        <div class="form-group">
+            <label for="line-width">Width: <span id="width-value">6</span>px</label>
+            <input type="range" id="line-width" min="1" max="20" value="6">
+        </div>
+        
+        <div class="form-group">
+            <label for="line-opacity">Opacity: <span id="opacity-value">1.0</span></label>
+            <input type="range" id="line-opacity" min="0" max="1" step="0.1" value="1">
+        </div>
+        
+        <div class="form-group">
+            <label for="description">Description:</label>
+            <textarea id="description" placeholder="Enter route description..." rows="3"></textarea>
+        </div>
+        
+        <div class="button-group">
+            <button id="save-properties" class="btn btn-primary">Save</button>
+            <button id="cancel-properties" class="btn">Cancel</button>
+        </div>
+    </div>
+    
+    <!-- Loading Indicator -->
+    <div id="loading" class="loading">
+        <div class="spinner"></div>
+        <p>Loading map...</p>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>

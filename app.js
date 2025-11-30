@@ -28,7 +28,7 @@ function initializeMap() {
     map = new maplibregl.Map({
         container: 'map',
         style: getMapStyle(),
-        center: [-74.006, 40.7128], // New York City (matches sample-routes.geojson)
+        center: [30.5234, 50.4501], // Kyiv, Ukraine
         zoom: 12,
         attributionControl: true
     });

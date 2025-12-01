@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Offline metro route editor for underground exploration">
+    <meta name="description" content="Редактор маршрутов метро для подземных исследований">
     <meta name="theme-color" content="#2c3e50">
-    <title>Metro Map - Custom Routes</title>
+    <title>Карта метро - Пользовательские маршруты</title>
     
     <!-- PWA Manifest -->
     <link rel="manifest" href="manifest.json">
@@ -34,31 +34,31 @@
     
     <!-- Controls Panel -->
     <div id="controls-panel" class="controls-panel">
-        <h3>Metro Map Editor</h3>
+        <h3>Редактор карты метро</h3>
         
         <div class="control-group">
             <button id="toggle-edit-mode" class="btn btn-primary">
-                <span id="edit-mode-text">Enable Edit Mode</span>
+                <span id="edit-mode-text">Включить режим редактирования</span>
             </button>
         </div>
         
         <div class="control-group" id="edit-controls" style="display: none;">
             <button id="toggle-curve-mode" class="btn">
-                <span id="curve-mode-text">Smooth Curves: OFF</span>
-                <span id="curve-indicator" style="display: none; color: #2ecc71; font-weight: bold;"> ✓</span>
+                <span id="curve-mode-text">Сглаживание: ВКЛ</span>
+                <span id="curve-indicator" style="display: inline; color: #2ecc71; font-weight: bold;"> ✓</span>
             </button>
-            <button id="draw-line" class="btn">Draw Line</button>
-            <button id="draw-polygon" class="btn">Draw Station</button>
+            <button id="draw-line" class="btn">Рисовать линию</button>
+            <button id="draw-polygon" class="btn">Рисовать станцию</button>
         </div>
         
         <div class="control-group" style="display: flex; gap: 10px;">
-            <button id="export-geojson" class="btn" style="flex: 1;">Export</button>
-            <button id="import-geojson-btn" class="btn" style="flex: 1;">Import</button>
+            <button id="export-geojson" class="btn" style="flex: 1;">Экспорт</button>
+            <button id="import-geojson-btn" class="btn" style="flex: 1;">Импорт</button>
             <input type="file" id="import-file" accept=".geojson,.json" style="display: none;">
         </div>
         
         <div class="control-group">
-            <button id="clear-all-routes" class="btn btn-danger">Clear All Routes</button>
+            <button id="clear-all-routes" class="btn btn-danger">Очистить все маршруты</button>
         </div>
     </div>
     
@@ -83,43 +83,43 @@
     
     <!-- Properties Panel (shown when drawing) -->
     <div id="properties-panel" class="properties-panel" style="display: none;">
-        <h3>Route Properties</h3>
+        <h3>Свойства маршрута</h3>
         
         <div class="form-group">
-            <label for="line-name">Line Name:</label>
-            <input type="text" id="line-name" placeholder="e.g., Line 1">
+            <label for="line-name">Название линии:</label>
+            <input type="text" id="line-name" placeholder="например, Линия 1">
         </div>
         
         <div class="form-group">
-            <label for="line-color">Color:</label>
+            <label for="line-color">Цвет:</label>
             <input type="color" id="line-color" value="#ff0000">
         </div>
         
         <div class="form-group">
-            <label for="line-width">Width: <span id="width-value">6</span>px</label>
+            <label for="line-width">Ширина: <span id="width-value">6</span>пкс</label>
             <input type="range" id="line-width" min="1" max="20" value="6">
         </div>
         
         <div class="form-group">
-            <label for="line-opacity">Opacity: <span id="opacity-value">1.0</span></label>
+            <label for="line-opacity">Прозрачность: <span id="opacity-value">1.0</span></label>
             <input type="range" id="line-opacity" min="0" max="1" step="0.1" value="1">
         </div>
         
         <div class="form-group">
-            <label for="description">Description:</label>
-            <textarea id="description" placeholder="Enter route description..." rows="3"></textarea>
+            <label for="description">Описание:</label>
+            <textarea id="description" placeholder="Введите описание маршрута..." rows="3"></textarea>
         </div>
         
         <div class="button-group">
-            <button id="save-properties" class="btn btn-primary">Save</button>
-            <button id="cancel-properties" class="btn">Cancel</button>
+            <button id="save-properties" class="btn btn-primary">Сохранить</button>
+            <button id="cancel-properties" class="btn">Отмена</button>
         </div>
     </div>
     
     <!-- Loading Indicator -->
     <div id="loading" class="loading">
         <div class="spinner"></div>
-        <p>Loading map...</p>
+        <p>Загрузка карты...</p>
     </div>
     
     <!-- PWA Install Banner -->
@@ -127,10 +127,10 @@
         <div class="install-content">
             <span class="install-icon">📱</span>
             <div class="install-text">
-                <strong>Install Metro Map</strong>
-                <p>Work offline in underground explorations</p>
+                <strong>Установить карту метро</strong>
+                <p>Работайте офлайн в подземных исследованиях</p>
             </div>
-            <button id="install-button" class="btn btn-primary">Install</button>
+            <button id="install-button" class="btn btn-primary">Установить</button>
             <button id="dismiss-install" class="btn-close">✕</button>
         </div>
     </div>
@@ -138,7 +138,7 @@
     <!-- Offline Indicator -->
     <div id="offline-indicator" class="offline-indicator" style="display: none;">
         <span class="offline-icon">⚠️</span>
-        <span>Offline Mode - Using cached data</span>
+        <span>Офлайн режим - Используются кэшированные данные</span>
     </div>
     
     <script src="app.js"></script>

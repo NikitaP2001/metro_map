@@ -94,7 +94,8 @@ body {
     border-radius: 8px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     z-index: 98;
-    max-width: 300px;
+    max-width: 350px;
+    min-width: 280px;
     transition: transform 0.3s ease, top 0.3s ease;
     max-height: calc(100vh - 370px);
     overflow-y: auto;
@@ -311,6 +312,23 @@ body {
     color: #333;
 }
 
+/* Larger close button for better mobile usability */
+.maplibregl-popup-close-button {
+    width: 32px;
+    height: 32px;
+    font-size: 24px;
+    line-height: 32px;
+    padding: 0;
+    border-radius: 4px;
+    color: #666;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
+.maplibregl-popup-close-button:hover {
+    background: #f0f0f0;
+    color: #333;
+}
+
 /* MapLibre GL Draw Controls Customization */
 .maplibre-gl-draw_ctrl-draw-btn {
     background-repeat: no-repeat;
@@ -323,16 +341,23 @@ body {
 
 /* Responsive Design */
 @media (max-width: 768px) {
-    .controls-panel,
-    .properties-panel {
+    .controls-panel {
         max-width: calc(100vw - 40px);
         left: 20px;
         right: 20px;
-    }
-    
-    .controls-panel {
         top: auto;
         bottom: 20px;
+    }
+    
+    .properties-panel {
+        max-width: min(45vw, 350px);
+        min-width: 280px;
+        left: 10px;
+    }
+    
+    .properties-panel.controls-hidden {
+        top: 80px;
+        max-height: calc(100vh - 100px);
     }
 }
 

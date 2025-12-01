@@ -7,13 +7,16 @@ let draw;
 let editMode = false;
 let currentFeatureId = null;
 let customRoutes = [];
-let curveMode = false;
+let curveMode = true;
 let isEditingCurve = false;
 let editPoints = [];
 let draggedPointIndex = null;
+let draggedPointType = null; // 'main' or 'branch'
 let dragStartPoints = null;
+let dragStartBranches = null; // Save branch state for dragging
 let hasMovedDuringDrag = false; // Track if point actually moved during drag
 let pendingDragIndex = null; // Index of point with mouse pressed (not dragging yet)
+let pendingDragType = null; // Type of pending drag point
 let justDeletedPoint = false; // Prevent line dblclick from firing right after point delete
 let lastTapTime = 0; // For detecting double-tap on mobile
 let lastTapTarget = null; // Track what was tapped
@@ -21,6 +24,13 @@ let touchMoved = false; // Track if touch moved (drag vs tap)
 let tempLayerId = 'temp-edit-layer';
 let tempPointsLayerId = 'temp-edit-points';
 let currentPopup = null; // Track the current popup to close it when opening a new one
+
+// Initialize window-level branch variables
+window.drawingBranch = false;
+window.branchStartConnected = false;
+window.branchConnectionPoint = null;
+window.branchConnectionIndex = null;
+window.currentRouteBranches = [];
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', () => {
@@ -263,7 +273,7 @@ function initializeMap() {
         // Add click handlers
         setupMapClickHandlers();
         
-        // Prevent double-click zoom when in curve editing mode
+        // Prevent double-click zoom when in curve editing mode (desktop)
         map.on('dblclick', (e) => {
             if (isEditingCurve) {
                 e.preventDefault();
@@ -527,13 +537,10 @@ function showFeaturePopup(e) {
     
     if (!featureId) {
         console.error('Could not find feature ID');
-        console.log('Feature:', feature);
-        console.log('Custom routes:', customRoutes);
         alert('Error: Could not identify this route. Please try again.');
         return;
     }
-    
-    console.log('Found feature ID:', featureId);
+
     
     let html = `<h4>${props.name || 'Unnamed Route'}</h4>`;
     
@@ -554,17 +561,28 @@ function showFeaturePopup(e) {
     }
     
     html += '<div style="margin-top: 10px; display: flex; gap: 5px;">';
-    html += `<button onclick="window.editExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer;">Edit</button>`;
-    html += `<button onclick="window.deleteExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer;">Delete</button>`;
+    html += `<button onclick="window.editExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer;">Править</button>`;
+    html += `<button onclick="window.deleteExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer;">Удалить</button>`;
     html += '</div>';
     
     // Close existing popup if any
     if (currentPopup) {
         currentPopup.remove();
+        currentPopup = null;
+    }
+    
+    // Remove any existing outside-click listeners
+    if (window.closePopupOnOutsideClick) {
+        document.removeEventListener('mousedown', window.closePopupOnOutsideClick, true);
+        document.removeEventListener('touchstart', window.closePopupOnOutsideClick, true);
+        delete window.closePopupOnOutsideClick;
     }
     
     // Create and track new popup
-    currentPopup = new maplibregl.Popup()
+    currentPopup = new maplibregl.Popup({
+        closeOnClick: false, // We'll handle closing manually
+        closeButton: false // Remove close button since we auto-close on outside click
+    })
         .setLngLat(e.lngLat)
         .setHTML(html)
         .addTo(map);
@@ -572,6 +590,55 @@ function showFeaturePopup(e) {
     // Clear reference when popup is closed
     currentPopup.on('close', () => {
         currentPopup = null;
+        // Remove event listeners if they exist
+        if (window.closePopupOnOutsideClick) {
+            document.removeEventListener('mousedown', window.closePopupOnOutsideClick, true);
+            document.removeEventListener('touchstart', window.closePopupOnOutsideClick, true);
+            delete window.closePopupOnOutsideClick;
+        }
+        // Remove map event listeners
+        map.off('movestart', window.closePopupOnMapInteraction);
+        map.off('zoomstart', window.closePopupOnMapInteraction);
+        map.off('dblclick', window.closePopupOnMapInteraction);
+    });
+    
+    // Close popup on map interactions (drag, zoom, double-click)
+    window.closePopupOnMapInteraction = () => {
+        if (currentPopup) {
+            currentPopup.remove();
+            currentPopup = null;
+        }
+    };
+    
+    map.on('movestart', window.closePopupOnMapInteraction);
+    map.on('zoomstart', window.closePopupOnMapInteraction);
+    map.on('dblclick', window.closePopupOnMapInteraction);
+    
+    // Close popup on any click/touch outside of it
+    // Use next animation frame to ensure popup is fully rendered
+    requestAnimationFrame(() => {
+        if (!currentPopup) return; // Popup was already closed
+        
+        window.closePopupOnOutsideClick = (event) => {
+            if (!currentPopup) {
+                document.removeEventListener('mousedown', window.closePopupOnOutsideClick, true);
+                document.removeEventListener('touchstart', window.closePopupOnOutsideClick, true);
+                delete window.closePopupOnOutsideClick;
+                return;
+            }
+            
+            const popupElement = document.querySelector('.maplibregl-popup');
+            
+            // Close if click is outside the popup content
+            if (popupElement && !popupElement.contains(event.target)) {
+                currentPopup.remove();
+                currentPopup = null;
+            }
+        };
+        
+        // Use capture phase and mousedown instead of click to catch events earlier
+        document.addEventListener('mousedown', window.closePopupOnOutsideClick, true);
+        document.addEventListener('touchstart', window.closePopupOnOutsideClick, true);
     });
 }
 
@@ -582,17 +649,16 @@ function toggleCurveMode() {
     const curveIndicator = document.getElementById('curve-indicator');
     
     if (curveMode) {
-        curveModeText.textContent = 'Smooth Curves: ON';
+        curveModeText.textContent = 'Сглаживание: ВКЛ';
         curveIndicator.style.display = 'inline';
     } else {
-        curveModeText.textContent = 'Smooth Curves: OFF';
+        curveModeText.textContent = 'Сглаживание: ВЫКЛ';
         curveIndicator.style.display = 'none';
     }
 }
 
 // Edit existing route (called from popup)
 window.editExistingRoute = function(featureId) {
-    console.log('Attempting to edit route:', featureId);
     
     // Close all popups
     const popups = document.getElementsByClassName('maplibregl-popup');
@@ -604,15 +670,75 @@ window.editExistingRoute = function(featureId) {
     const feature = customRoutes.find(f => f.id === featureId);
     if (!feature) {
         console.error('Feature not found:', featureId);
-        console.log('Available routes:', customRoutes.map(r => r.id));
         alert('Error: Could not find this route. Please try again.');
         return;
     }
+
     
-    console.log('Found feature to edit:', feature);
-    
-    // Set current feature ID
+    // Set current feature ID and store original ID for tracking
     currentFeatureId = featureId;
+    window.originalFeatureId = featureId; // Track the original ID to ensure we update the right route
+    
+    // Temporarily remove this feature from display while editing
+    const filteredRoutes = customRoutes.filter(f => f.id !== featureId);
+    if (map.getSource('custom-routes')) {
+        const displayFeatures = filteredRoutes.map(feature => {
+            if (feature.geometry.type === 'LineString' && 
+                feature.properties.branches && 
+                feature.properties.branches.length > 0) {
+                
+                // Create MultiLineString with main line and all branches
+                const lines = [feature.geometry.coordinates];
+                const controlPoints = feature.properties.controlPoints || feature.geometry.coordinates;
+                const hasCurveSmoothing = feature.properties.controlPoints && 
+                                         feature.properties.controlPoints.length > 0;
+                
+                for (const branch of feature.properties.branches) {
+                    let connectionPoint = null;
+                    
+                    if (typeof branch.connectionIndex === 'number') {
+                        if (branch.connectionIndex < controlPoints.length) {
+                            connectionPoint = controlPoints[branch.connectionIndex];
+                        }
+                    } else if (typeof branch.connectionIndex === 'string' && branch.connectionIndex.startsWith('branch-')) {
+                        const match = branch.connectionIndex.match(/branch-(\d+)-(\d+)/);
+                        if (match && feature.properties.branches) {
+                            const branchIdx = parseInt(match[1]);
+                            const pointIdx = parseInt(match[2]);
+                            if (branchIdx < feature.properties.branches.length) {
+                                const targetBranch = feature.properties.branches[branchIdx];
+                                if (pointIdx < targetBranch.points.length) {
+                                    connectionPoint = targetBranch.points[pointIdx];
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (connectionPoint) {
+                        const branchControlPoints = [connectionPoint, ...branch.points];
+                        const branchLine = hasCurveSmoothing ? 
+                            smoothLineString(branchControlPoints) : 
+                            branchControlPoints;
+                        lines.push(branchLine);
+                    }
+                }
+                
+                return {
+                    ...feature,
+                    geometry: {
+                        type: 'MultiLineString',
+                        coordinates: lines
+                    }
+                };
+            }
+            return feature;
+        });
+        
+        map.getSource('custom-routes').setData({
+            type: 'FeatureCollection',
+            features: displayFeatures
+        });
+    }
     
     // Enable edit mode if not already enabled
     if (!editMode) {
@@ -635,6 +761,17 @@ window.editExistingRoute = function(featureId) {
         } else {
             // Fallback for old routes without stored control points
             editPoints = feature.geometry.coordinates.map(c => [...c]);
+        }
+        
+        // Load branch information if it exists
+        if (feature.properties.branches && feature.properties.branches.length > 0) {
+            window.currentRouteBranches = feature.properties.branches.map(b => ({
+                connectionIndex: b.connectionIndex,
+                points: b.points.map(p => [...p])
+            }));
+
+        } else {
+            window.currentRouteBranches = [];
         }
         
         // Enable interactive editing mode
@@ -668,8 +805,6 @@ window.editExistingRoute = function(featureId) {
 
 // Delete existing route (called from popup)
 window.deleteExistingRoute = function(featureId) {
-    console.log('Attempting to delete route:', featureId);
-    console.log('Current routes before delete:', customRoutes.length);
     
     // Close all popups
     const popups = document.getElementsByClassName('maplibregl-popup');
@@ -683,7 +818,7 @@ window.deleteExistingRoute = function(featureId) {
         customRoutes = customRoutes.filter(f => f.id !== featureId);
         const afterLength = customRoutes.length;
         
-        console.log('Routes after filter:', afterLength, 'Deleted:', beforeLength - afterLength);
+
         
         // Save to localStorage
         saveRoutesToStorage();
@@ -692,7 +827,7 @@ window.deleteExistingRoute = function(featureId) {
         refreshCustomRoutes();
         
         if (beforeLength > afterLength) {
-            console.log('Route deleted successfully');
+
         } else {
             console.error('Route was not found for deletion');
             alert('Error: Could not delete route. ID mismatch.');
@@ -708,28 +843,43 @@ function toggleEditMode() {
     
     if (editMode) {
         map.addControl(draw, 'top-left');
-        editModeText.textContent = 'Disable Edit Mode';
+        editModeText.textContent = 'Отключить режим редактирования';
         editControls.style.display = 'block';
         
         // Listen to draw events
         map.on('draw.create', handleDrawCreate);
         map.on('draw.update', handleDrawUpdate);
         map.on('draw.delete', handleDrawDelete);
+        map.on('draw.render', handleDrawRender);
     } else {
         map.removeControl(draw);
-        editModeText.textContent = 'Enable Edit Mode';
+        editModeText.textContent = 'Включить режим редактирования';
         editControls.style.display = 'none';
         
         // Remove draw event listeners
         map.off('draw.create', handleDrawCreate);
         map.off('draw.update', handleDrawUpdate);
         map.off('draw.delete', handleDrawDelete);
+        map.off('draw.render', handleDrawRender);
     }
 }
 
 // Start drawing
 function startDrawing(type) {
     if (type === 'LineString') {
+        // If we're in curve editing mode, we'll connect new lines to the existing route
+        if (isEditingCurve && editPoints.length > 0) {
+            // Store flag that we're drawing a branch
+            window.drawingBranch = true;
+            window.branchStartConnected = false;
+            window.hasSeenFirstCoord = false;
+            
+            // IMPORTANT: Remove line double-click handlers while drawing branch
+            // This prevents interference with MapboxDraw's point adding
+            map.off('dblclick', tempLayerId + '-hitarea', onLineDoubleClick);
+            map.off('touchend', tempLayerId + '-hitarea', onLineTouchTap);
+        }
+        
         draw.changeMode('draw_line_string');
     } else if (type === 'Polygon') {
         draw.changeMode('draw_polygon');
@@ -790,10 +940,68 @@ function handleDrawCreate(e) {
     const feature = e.features[0];
     currentFeatureId = feature.id;
     
+    // Clear branch preview
+    if (map.getSource('branch-preview')) {
+        map.getSource('branch-preview').setData({
+            type: 'FeatureCollection',
+            features: []
+        });
+    }
+    
+    // Reset branch drawing flag
+    const wasBranchDrawing = window.drawingBranch;
+    const connectionIndex = window.branchConnectionIndex;
+    window.drawingBranch = false;
+    window.branchStartConnected = false;
+    window.branchConnectionPoint = null;
+    window.branchConnectionIndex = null;
+    window.hasSeenFirstCoord = false;
+    
+    // Restore line handlers if we were drawing a branch
+    if (wasBranchDrawing && isEditingCurve) {
+        map.on('dblclick', tempLayerId + '-hitarea', onLineDoubleClick);
+        map.on('touchend', tempLayerId + '-hitarea', onLineTouchTap);
+    }
+    
     // For LineStrings, enable interactive curve editing
     if (feature.geometry.type === 'LineString') {
-        // Store original control points
-        editPoints = feature.geometry.coordinates.map(c => [...c]);
+        let newPoints = feature.geometry.coordinates.map(c => [...c]);
+        
+        // If we were drawing a branch (already editing a line)
+        if (wasBranchDrawing && isEditingCurve && editPoints.length > 0 && connectionIndex !== null) {
+            
+            // The first point is the connection point, we should exclude it from branch points
+            // since it's already represented by connectionIndex
+            const branchPoints = newPoints.slice(1); // Skip first point (it's the connection)
+            
+            // Only store the branch if it has at least one point (not just the connection)
+            if (branchPoints.length > 0) {
+                // Store branch information
+                if (!window.currentRouteBranches) {
+                    window.currentRouteBranches = [];
+                }
+                
+                window.currentRouteBranches.push({
+                    connectionIndex: connectionIndex,
+                    points: branchPoints
+                });
+            }
+            
+            // Remove the drawn feature since we've merged it into the branch
+            draw.delete(feature.id);
+            
+            // Update the display with the new branch
+            updateCurveDisplay();
+            
+            // Stay in editing mode - don't show properties panel
+            return;
+        }
+        
+        // Normal flow: Store original control points
+        editPoints = newPoints;
+        
+        // Clear any existing branches when starting a new route
+        window.currentRouteBranches = [];
         
         // Apply curve smoothing if enabled
         if (curveMode) {
@@ -810,12 +1018,206 @@ function handleDrawCreate(e) {
     showPropertiesPanel(feature);
 }
 
+// Handle draw render (called during drawing process)
+function handleDrawRender(e) {
+    // If we're drawing a branch and haven't connected the start yet
+    if (window.drawingBranch && isEditingCurve && editPoints.length > 0) {
+        const features = draw.getAll();
+        
+        // Find the feature being drawn
+        const drawingFeature = features.features.find(f => 
+            f.geometry && f.geometry.type === 'LineString' && 
+            f.geometry.coordinates && f.geometry.coordinates.length > 0
+        );
+        
+        if (drawingFeature) {
+            const coords = drawingFeature.geometry.coordinates;
+            
+            // Track if we've seen a coordinate yet (to detect transition from 0->1)
+            if (!window.hasSeenFirstCoord) {
+                window.hasSeenFirstCoord = false;
+            }
+            
+            // Only snap when we have at least 2 points (user has clicked to place second point)
+            // This ensures the first point is actually placed, not just hovering
+            if (coords.length >= 2 && !window.branchStartConnected) {
+                const firstPoint = coords[0];
+                
+                // Collect all points: main line + all branch points
+                let allPoints = [...editPoints];
+                let pointInfo = editPoints.map((pt, i) => ({ type: 'main', index: i, point: pt }));
+                
+                if (window.currentRouteBranches) {
+                    window.currentRouteBranches.forEach((branch, branchIdx) => {
+                        branch.points.forEach((pt, ptIdx) => {
+                            allPoints.push(pt);
+                            pointInfo.push({ type: 'branch', branchIndex: branchIdx, pointIndex: ptIdx, point: pt });
+                        });
+                    });
+                }
+                
+                // Find nearest point among ALL points
+                let minDistance = Infinity;
+                let nearestInfo = null;
+                
+                for (let i = 0; i < allPoints.length; i++) {
+                    const dist = getGeographicDistance(firstPoint, allPoints[i]);
+                    
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        nearestInfo = pointInfo[i];
+                    }
+                }
+                
+                // Always snap to nearest point (no distance limit)
+                if (nearestInfo) {
+                    
+                    // Store the connection info IMMEDIATELY
+                    window.branchConnectionPoint = [...nearestInfo.point];
+                    
+                    // Store connection as branch reference if it's a branch point
+                    if (nearestInfo.type === 'branch') {
+                        // Connection is to a branch - store as special reference
+                        window.branchConnectionIndex = 'branch-' + nearestInfo.branchIndex + '-' + nearestInfo.pointIndex;
+                    } else {
+                        // Connection is to main line
+                        window.branchConnectionIndex = nearestInfo.index;
+                    }
+                    
+                    window.branchStartConnected = true;
+                    
+                    // Update the first point to snap to the connection point
+                    drawingFeature.geometry.coordinates[0] = nearestInfo.point;
+                    
+                    // Update the feature in draw ONCE
+                    draw.add(drawingFeature);
+                }
+            } else if (coords.length > 1 && window.branchStartConnected) {
+                // Show preview of the branch with smoothing
+                // Use ALL coordinates from the drawing (they already start with the snapped connection point)
+                const branchCoords = coords;
+                
+                // Add temporary preview line to show the connection
+                if (map.getSource('branch-preview')) {
+                    const previewCoords = curveMode ? smoothLineString(branchCoords) : branchCoords;
+                    
+                    map.getSource('branch-preview').setData({
+                        type: 'Feature',
+                        geometry: {
+                            type: 'LineString',
+                            coordinates: previewCoords
+                        }
+                    });
+                } else {
+                    // Create preview source and layer
+                    map.addSource('branch-preview', {
+                        type: 'geojson',
+                        data: {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'LineString',
+                                coordinates: curveMode ? smoothLineString(branchCoords) : branchCoords
+                            }
+                        }
+                    });
+                    
+                    map.addLayer({
+                        id: 'branch-preview',
+                        type: 'line',
+                        source: 'branch-preview',
+                        paint: {
+                            'line-color': '#3498db',
+                            'line-width': 4,
+                            'line-opacity': 0.6,
+                            'line-dasharray': [2, 2]
+                        }
+                    });
+                }
+            }
+        }
+    } else {
+        // Clear preview when not drawing branch
+        if (map.getSource('branch-preview')) {
+            map.getSource('branch-preview').setData({
+                type: 'FeatureCollection',
+                features: []
+            });
+        }
+    }
+}
+
+// Calculate geographic distance between two points using Haversine formula
+function getGeographicDistance(point1, point2) {
+    const R = 6371000; // Earth's radius in meters
+    const lat1 = point1[1] * Math.PI / 180;
+    const lat2 = point2[1] * Math.PI / 180;
+    const deltaLat = (point2[1] - point1[1]) * Math.PI / 180;
+    const deltaLng = (point2[0] - point1[0]) * Math.PI / 180;
+    
+    const a = Math.sin(deltaLat/2) * Math.sin(deltaLat/2) +
+              Math.cos(lat1) * Math.cos(lat2) *
+              Math.sin(deltaLng/2) * Math.sin(deltaLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    
+    return R * c; // Distance in meters
+}
+
+// Find nearest point on a line to a given point
+function findNearestPointOnLine(point, linePoints) {
+    let minDistance = Infinity;
+    let nearestPoint = null;
+    let insertIndex = -1;
+    
+    // Simply check distance to each control point using geographic distance
+    for (let i = 0; i < linePoints.length; i++) {
+        const dist = getGeographicDistance(point, linePoints[i]);
+        
+        if (dist < minDistance) {
+            minDistance = dist;
+            nearestPoint = [...linePoints[i]];
+            insertIndex = i;
+        }
+    }
+    
+    return {
+        point: nearestPoint,
+        distance: minDistance,
+        insertIndex: insertIndex
+    };
+}
+
 // Enable interactive curve editing
 function enableCurveEditing() {
     if (isEditingCurve) return;
     isEditingCurve = true;
     
-    console.log('ENABLING CURVE EDITING - editPoints:', editPoints.length);
+    // Initialize branches array if not already set
+    if (!window.currentRouteBranches) {
+        window.currentRouteBranches = [];
+    }
+    
+    // Disable MapLibre's double-click and double-tap zoom
+    map.doubleClickZoom.disable();
+    
+    // Add global touch handler to prevent double-tap zoom
+    const canvas = map.getCanvas();
+    let lastCanvasTouchTime = 0;
+    
+    window.preventDoubleTapZoom = function(e) {
+        const now = Date.now();
+        const timeSinceLastTouch = now - lastCanvasTouchTime;
+        
+        if (timeSinceLastTouch < 300 && e.touches.length === 1) {
+            // This is a double-tap, prevent it
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        }
+        
+        lastCanvasTouchTime = now;
+    };
+    
+    canvas.addEventListener('touchstart', window.preventDoubleTapZoom, { passive: false });
     
     // Hide the draw feature temporarily
     if (draw.get(currentFeatureId)) {
@@ -824,7 +1226,6 @@ function enableCurveEditing() {
     
     // Add temporary layers for editing
     if (!map.getSource(tempLayerId)) {
-        console.log('Creating temp layers for editing');
         map.addSource(tempLayerId, {
             type: 'geojson',
             data: {
@@ -908,8 +1309,6 @@ function enableCurveEditing() {
     const pointHitArea = tempPointsLayerId + '-hitarea';
     const pointDblClickArea = tempPointsLayerId + '-dblclick';
     
-    console.log('Curve editing enabled - layers created, points:', editPoints.length);
-    console.log('Attached dblclick handler to layer:', pointDblClickArea);
     map.on('mousedown', pointHitArea, onPointMouseDown);
     map.on('touchstart', pointHitArea, onPointTouchStart);
     map.on('mousemove', onPointMouseMove);
@@ -977,31 +1376,110 @@ function disableCurveEditing() {
     draggedPointIndex = null;
     dragStartPoints = null;
     map.getCanvas().style.cursor = '';
+    
+    // Re-enable MapLibre's zoom gestures
+    map.doubleClickZoom.enable();
+    
+    // Remove global touch handler
+    const canvas = map.getCanvas();
+    if (window.preventDoubleTapZoom) {
+        canvas.removeEventListener('touchstart', window.preventDoubleTapZoom);
+        delete window.preventDoubleTapZoom;
+    }
 }
 
 // Update curve display
 function updateCurveDisplay() {
-    // Update line
+    // Prepare main line coordinates
     const lineCoords = curveMode ? smoothLineString(editPoints) : editPoints;
-    map.getSource(tempLayerId).setData({
+    
+    // Create features array with main line
+    const lineFeatures = [{
         type: 'Feature',
         geometry: {
             type: 'LineString',
             coordinates: lineCoords
         }
+    }];
+    
+    // Add branch lines if they exist
+    if (window.currentRouteBranches && window.currentRouteBranches.length > 0) {
+        for (const branch of window.currentRouteBranches) {
+            let connectionPoint = null;
+            
+            // Check if connection is to main line (number) or another branch (string)
+            if (typeof branch.connectionIndex === 'number') {
+                // Connection to main line
+                if (branch.connectionIndex < editPoints.length) {
+                    connectionPoint = editPoints[branch.connectionIndex];
+                }
+            } else if (typeof branch.connectionIndex === 'string' && branch.connectionIndex.startsWith('branch-')) {
+                // Connection to another branch - parse the string
+                const match = branch.connectionIndex.match(/branch-(\d+)-(\d+)/);
+                if (match && window.currentRouteBranches) {
+                    const branchIdx = parseInt(match[1]);
+                    const pointIdx = parseInt(match[2]);
+                    if (branchIdx < window.currentRouteBranches.length) {
+                        const targetBranch = window.currentRouteBranches[branchIdx];
+                        if (pointIdx < targetBranch.points.length) {
+                            connectionPoint = targetBranch.points[pointIdx];
+                        }
+                    }
+                }
+            }
+            
+            if (connectionPoint) {
+                const branchCoords = [connectionPoint, ...branch.points];
+                const smoothedBranchCoords = curveMode ? smoothLineString(branchCoords) : branchCoords;
+                
+                lineFeatures.push({
+                    type: 'Feature',
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: smoothedBranchCoords
+                    }
+                });
+            }
+        }
+    }
+    
+    // Update line layer with main line and branches
+    map.getSource(tempLayerId).setData({
+        type: 'FeatureCollection',
+        features: lineFeatures
     });
     
-    // Update control points
+    // Collect all control points (main line + branches)
     const pointFeatures = editPoints.map((coord, index) => ({
         type: 'Feature',
-        properties: { index },
+        properties: { index, type: 'main' },
         geometry: {
             type: 'Point',
             coordinates: coord
         }
     }));
     
-    console.log('UPDATE: Setting', pointFeatures.length, 'control points on map');
+    // Add branch control points
+    if (window.currentRouteBranches && window.currentRouteBranches.length > 0) {
+        for (let branchIdx = 0; branchIdx < window.currentRouteBranches.length; branchIdx++) {
+            const branch = window.currentRouteBranches[branchIdx];
+            for (let i = 0; i < branch.points.length; i++) {
+                pointFeatures.push({
+                    type: 'Feature',
+                    properties: { 
+                        index: `branch-${branchIdx}-${i}`,
+                        type: 'branch',
+                        branchIndex: branchIdx,
+                        pointIndex: i
+                    },
+                    geometry: {
+                        type: 'Point',
+                        coordinates: branch.points[i]
+                    }
+                });
+            }
+        }
+    }
     
     map.getSource(tempPointsLayerId).setData({
         type: 'FeatureCollection',
@@ -1011,8 +1489,6 @@ function updateCurveDisplay() {
 
 // Double-click on point to remove it
 function onPointDoubleClick(e) {
-    console.log('POINT DOUBLE-CLICK FIRED!', e.features[0]?.properties);
-    
     e.preventDefault();
     if (e.originalEvent) {
         e.originalEvent.preventDefault();
@@ -1037,10 +1513,47 @@ function onPointDoubleClick(e) {
     }
     
     if (!isEditingCurve) return;
-    if (editPoints.length <= 2) return; // Need at least 2 points for a line
     
-    const pointIndex = e.features[0].properties.index;
-    editPoints.splice(pointIndex, 1);
+    const pointData = e.features[0].properties;
+    const pointType = pointData.type;
+    const pointIndex = pointData.index;
+    
+    // Handle branch point deletion
+    if (pointType === 'branch') {
+        const branchIdx = pointData.branchIndex;
+        const branchPointIdx = pointData.pointIndex;
+        
+        if (window.currentRouteBranches[branchIdx].points.length <= 1) {
+            // Delete entire branch if only one point left
+            window.currentRouteBranches.splice(branchIdx, 1);
+        } else {
+            // Delete just this point from the branch
+            window.currentRouteBranches[branchIdx].points.splice(branchPointIdx, 1);
+        }
+    } else {
+        // Handle main line point deletion
+        if (editPoints.length <= 2) return; // Need at least 2 points for a line
+        
+        const deleteIndex = typeof pointIndex === 'number' ? pointIndex : parseInt(pointIndex);
+        editPoints.splice(deleteIndex, 1);
+        
+        // Update connection indices in all branches
+        if (window.currentRouteBranches) {
+            window.currentRouteBranches.forEach(branch => {
+                if (branch.connectionIndex > deleteIndex) {
+                    branch.connectionIndex--;
+                } else if (branch.connectionIndex === deleteIndex) {
+                    // Connection point was deleted - remove the branch
+                    console.warn('Connection point deleted - removing branch');
+                    branch.connectionIndex = -1; // Mark for removal
+                }
+            });
+            
+            // Remove branches marked for deletion
+            window.currentRouteBranches = window.currentRouteBranches.filter(b => b.connectionIndex >= 0);
+        }
+    }
+    
     updateCurveDisplay();
     
     // Set flag to prevent line dblclick from immediately adding point back
@@ -1077,13 +1590,12 @@ function onPointTouchTap(e) {
     const featureId = e.features[0]?.properties?.index;
     const isDoubleTap = timeSinceLastTap < tapDelay && lastTapTarget === featureId;
     
-    console.log('Point tap:', featureId, 'isDoubleTap:', isDoubleTap, 'timeSince:', timeSinceLastTap);
-    
     lastTapTime = now;
     lastTapTarget = featureId;
     
     if (isDoubleTap && featureId !== undefined) {
-        console.log('MOBILE: Double-tap on point', featureId, '- DELETING');
+    
+    const isDoubleTap = timeSinceLastTap < tapDelay && lastTapTarget === featureId;
         
         // Don't delete if we just finished dragging
         if (hasMovedDuringDrag) {
@@ -1091,9 +1603,46 @@ function onPointTouchTap(e) {
             return;
         }
         
-        if (editPoints.length <= 2) return; // Need at least 2 points
+        const pointData = e.features[0]?.properties;
+        const pointType = pointData?.type;
+        const pointIndex = pointData?.index;
         
-        editPoints.splice(featureId, 1);
+        // Handle branch point deletion
+        if (pointType === 'branch') {
+            const branchIdx = pointData.branchIndex;
+            const branchPointIdx = pointData.pointIndex;
+            
+            if (window.currentRouteBranches[branchIdx].points.length <= 1) {
+                // Delete entire branch if only one point left
+                window.currentRouteBranches.splice(branchIdx, 1);
+            } else {
+                // Delete just this point from the branch
+                window.currentRouteBranches[branchIdx].points.splice(branchPointIdx, 1);
+            }
+        } else {
+            // Handle main line point deletion
+            if (editPoints.length <= 2) return; // Need at least 2 points
+            
+            const deleteIndex = typeof featureId === 'number' ? featureId : parseInt(featureId);
+            editPoints.splice(deleteIndex, 1);
+            
+            // Update connection indices in all branches
+            if (window.currentRouteBranches) {
+                window.currentRouteBranches.forEach(branch => {
+                    if (branch.connectionIndex > deleteIndex) {
+                        branch.connectionIndex--;
+                    } else if (branch.connectionIndex === deleteIndex) {
+                        // Connection point was deleted - remove the branch
+                        console.warn('Connection point deleted - removing branch');
+                        branch.connectionIndex = -1; // Mark for removal
+                    }
+                });
+                
+                // Remove branches marked for deletion
+                window.currentRouteBranches = window.currentRouteBranches.filter(b => b.connectionIndex >= 0);
+            }
+        }
+        
         updateCurveDisplay();
         
         // Set flag to prevent line tap from adding point back
@@ -1108,6 +1657,7 @@ function onPointTouchTap(e) {
 
 // Mobile: Double-tap on line to add new point
 function onLineTouchTap(e) {
+    
     // CRITICAL: Prevent zoom FIRST, before any logic or returns
     if (e.originalEvent) {
         e.originalEvent.preventDefault();
@@ -1115,41 +1665,106 @@ function onLineTouchTap(e) {
     }
     e.preventDefault();
     
+    // Don't process if we're currently drawing a branch
+    if (window.drawingBranch) {
+        return;
+    }
+    
     if (!isEditingCurve) return;
     if (e.originalEvent.touches.length > 0) return; // Still touching
-    
-    // CRITICAL: Don't process if we just handled a point tap (point layer fires before line layer)
-    // If lastTapTarget is a number (point index), this tap is from the same touch event on the point
-    if (typeof lastTapTarget === 'number') {
-        console.log('Ignoring line tap - already handled by point tap');
-        return;
-    }
-    
-    // Don't add point if we just deleted one
-    if (justDeletedPoint) {
-        console.log('Ignoring line tap - just deleted a point');
-        return;
-    }
     
     const now = Date.now();
     const timeSinceLastTap = now - lastTapTime;
     const tapDelay = 300; // ms between taps to count as double-tap
     
-    const isDoubleTap = timeSinceLastTap < tapDelay && lastTapTarget === 'line';
+    // CRITICAL: Don't process if we just handled a point tap (point layer fires before line layer)
+    // If lastTapTarget is a point (number or string like "branch-0-1"), this tap is from the same touch event
+    // BUT only ignore if it's within the same event cycle (very recent, < 50ms)
+    if (lastTapTarget !== null && lastTapTarget !== 'line' && timeSinceLastTap < 50) {
+        return;
+    }
     
-    console.log('Line tap - isDoubleTap:', isDoubleTap, 'timeSince:', timeSinceLastTap);
+    // Don't add point if we just deleted one
+    if (justDeletedPoint) {
+        return;
+    }
+    
+    const isDoubleTap = timeSinceLastTap < tapDelay && lastTapTarget === 'line';
     
     lastTapTime = now;
     lastTapTarget = 'line';
     
     if (isDoubleTap) {
-        console.log('MOBILE: Double-tap on line - ADDING POINT');
-        
         const clickCoords = [e.lngLat.lng, e.lngLat.lat];
         
-        // Find the closest segment to insert the point
-        let minDistance = Infinity;
-        let insertIndex = 1;
+        // Check if we clicked on a branch segment or main line
+        let clickedBranch = null;
+        let minBranchDistance = Infinity;
+        let branchInsertIndex = -1;
+        
+        // Check each branch
+        if (window.currentRouteBranches) {
+            window.currentRouteBranches.forEach((branch, branchIdx) => {
+                if (branch.points.length < 1) return;
+                
+                // Check the connection segment (from connection point to first branch point)
+                let connectionPoint = null;
+                if (typeof branch.connectionIndex === 'number') {
+                    connectionPoint = editPoints[branch.connectionIndex];
+                } else if (typeof branch.connectionIndex === 'string' && branch.connectionIndex.startsWith('branch-')) {
+                    const match = branch.connectionIndex.match(/branch-(\d+)-(\d+)/);
+                    if (match) {
+                        const targetBranchIdx = parseInt(match[1]);
+                        const targetPointIdx = parseInt(match[2]);
+                        if (window.currentRouteBranches[targetBranchIdx]) {
+                            connectionPoint = window.currentRouteBranches[targetBranchIdx].points[targetPointIdx];
+                        }
+                    }
+                }
+                
+                if (connectionPoint) {
+                    // Check segment from connection point to first branch point
+                    const segmentStart = connectionPoint;
+                    const segmentEnd = branch.points[0];
+                    
+                    const midpoint = [
+                        (segmentStart[0] + segmentEnd[0]) / 2,
+                        (segmentStart[1] + segmentEnd[1]) / 2
+                    ];
+                    
+                    const distance = getGeographicDistance(clickCoords, midpoint);
+                    
+                    if (distance < minBranchDistance) {
+                        minBranchDistance = distance;
+                        clickedBranch = branchIdx;
+                        branchInsertIndex = 0; // Insert at beginning of branch
+                    }
+                }
+                
+                // Check segments between branch points
+                for (let i = 0; i < branch.points.length - 1; i++) {
+                    const segmentStart = branch.points[i];
+                    const segmentEnd = branch.points[i + 1];
+                    
+                    const midpoint = [
+                        (segmentStart[0] + segmentEnd[0]) / 2,
+                        (segmentStart[1] + segmentEnd[1]) / 2
+                    ];
+                    
+                    const distance = getGeographicDistance(clickCoords, midpoint);
+                    
+                    if (distance < minBranchDistance) {
+                        minBranchDistance = distance;
+                        clickedBranch = branchIdx;
+                        branchInsertIndex = i + 1;
+                    }
+                }
+            });
+        }
+        
+        // Find the closest segment on main line
+        let minMainDistance = Infinity;
+        let mainInsertIndex = 1;
         
         for (let i = 0; i < editPoints.length - 1; i++) {
             const segmentStart = editPoints[i];
@@ -1160,19 +1775,31 @@ function onLineTouchTap(e) {
                 (segmentStart[1] + segmentEnd[1]) / 2
             ];
             
-            const distance = Math.sqrt(
-                Math.pow(clickCoords[0] - midpoint[0], 2) +
-                Math.pow(clickCoords[1] - midpoint[1], 2)
-            );
+            const distance = getGeographicDistance(clickCoords, midpoint);
             
-            if (distance < minDistance) {
-                minDistance = distance;
-                insertIndex = i + 1;
+            if (distance < minMainDistance) {
+                minMainDistance = distance;
+                mainInsertIndex = i + 1;
+            }
+        }
+        // Determine which segment is closer - branch or main
+        if (clickedBranch !== null && minBranchDistance < minMainDistance) {
+            // Add point to branch
+            window.currentRouteBranches[clickedBranch].points.splice(branchInsertIndex, 0, clickCoords);
+        } else {
+            // Add point to main line
+            editPoints.splice(mainInsertIndex, 0, clickCoords);
+            
+            // Update connection indices in all branches (increment if >= insertIndex)
+            if (window.currentRouteBranches) {
+                window.currentRouteBranches.forEach(branch => {
+                    if (branch.connectionIndex >= mainInsertIndex) {
+                        branch.connectionIndex++;
+                    }
+                });
             }
         }
         
-        // Insert the new point
-        editPoints.splice(insertIndex, 0, clickCoords);
         updateCurveDisplay();
         
         // Reset for next tap
@@ -1189,43 +1816,124 @@ function onLineDoubleClick(e) {
     }
     e.preventDefault();
     
+    // Don't process if we're currently drawing a branch
+    if (window.drawingBranch) {
+        return;
+    }
+    
     if (!isEditingCurve) return;
     
     // Don't add point if we just deleted one (prevents immediate re-add)
     if (justDeletedPoint) {
-        console.log('Ignoring line dblclick - just deleted a point');
         return;
     }
     
     const clickCoords = [e.lngLat.lng, e.lngLat.lat];
     
-    // Find the closest segment to insert the point
-    let minDistance = Infinity;
-    let insertIndex = 1;
+    // Check if we clicked on a branch segment or main line
+    let clickedBranch = null;
+    let minBranchDistance = Infinity;
+    let branchInsertIndex = -1;
+    
+    // Check each branch
+    if (window.currentRouteBranches) {
+        window.currentRouteBranches.forEach((branch, branchIdx) => {
+            if (branch.points.length < 1) return;
+            
+            // Check the connection segment (from connection point to first branch point)
+            let connectionPoint = null;
+            if (typeof branch.connectionIndex === 'number') {
+                connectionPoint = editPoints[branch.connectionIndex];
+            } else if (typeof branch.connectionIndex === 'string' && branch.connectionIndex.startsWith('branch-')) {
+                const match = branch.connectionIndex.match(/branch-(\d+)-(\d+)/);
+                if (match) {
+                    const targetBranchIdx = parseInt(match[1]);
+                    const targetPointIdx = parseInt(match[2]);
+                    if (window.currentRouteBranches[targetBranchIdx]) {
+                        connectionPoint = window.currentRouteBranches[targetBranchIdx].points[targetPointIdx];
+                    }
+                }
+            }
+            
+            if (connectionPoint) {
+                // Check segment from connection point to first branch point
+                const segmentStart = connectionPoint;
+                const segmentEnd = branch.points[0];
+                
+                const midpoint = [
+                    (segmentStart[0] + segmentEnd[0]) / 2,
+                    (segmentStart[1] + segmentEnd[1]) / 2
+                ];
+                
+                const distance = getGeographicDistance(clickCoords, midpoint);
+                
+                if (distance < minBranchDistance) {
+                    minBranchDistance = distance;
+                    clickedBranch = branchIdx;
+                    branchInsertIndex = 0; // Insert at beginning of branch
+                }
+            }
+            
+            // Check segments between branch points
+            for (let i = 0; i < branch.points.length - 1; i++) {
+                const segmentStart = branch.points[i];
+                const segmentEnd = branch.points[i + 1];
+                
+                const midpoint = [
+                    (segmentStart[0] + segmentEnd[0]) / 2,
+                    (segmentStart[1] + segmentEnd[1]) / 2
+                ];
+                
+                const distance = getGeographicDistance(clickCoords, midpoint);
+                
+                if (distance < minBranchDistance) {
+                    minBranchDistance = distance;
+                    clickedBranch = branchIdx;
+                    branchInsertIndex = i + 1;
+                }
+            }
+        });
+    }
+    
+    // Find the closest segment on main line
+    let minMainDistance = Infinity;
+    let mainInsertIndex = 1;
     
     for (let i = 0; i < editPoints.length - 1; i++) {
         const segmentStart = editPoints[i];
         const segmentEnd = editPoints[i + 1];
         
-        // Calculate distance from click point to segment midpoint
         const midpoint = [
             (segmentStart[0] + segmentEnd[0]) / 2,
             (segmentStart[1] + segmentEnd[1]) / 2
         ];
         
-        const distance = Math.sqrt(
-            Math.pow(clickCoords[0] - midpoint[0], 2) +
-            Math.pow(clickCoords[1] - midpoint[1], 2)
-        );
+        const distance = getGeographicDistance(clickCoords, midpoint);
         
-        if (distance < minDistance) {
-            minDistance = distance;
-            insertIndex = i + 1;
+        if (distance < minMainDistance) {
+            minMainDistance = distance;
+            mainInsertIndex = i + 1;
         }
     }
     
-    // Insert the new point
-    editPoints.splice(insertIndex, 0, clickCoords);
+    // Determine which segment is closer - branch or main
+    if (clickedBranch !== null && minBranchDistance < minMainDistance) {
+        // Add point to branch
+        window.currentRouteBranches[clickedBranch].points.splice(branchInsertIndex, 0, clickCoords);
+    } else {
+        // Add point to main line
+        editPoints.splice(mainInsertIndex, 0, clickCoords);
+        
+        // Update connection indices in all branches (increment if >= insertIndex)
+        if (window.currentRouteBranches) {
+            window.currentRouteBranches.forEach(branch => {
+                if (branch.connectionIndex >= mainInsertIndex) {
+                    branch.connectionIndex++;
+                }
+            });
+        }
+    }
+    
     updateCurveDisplay();
 }
 
@@ -1234,12 +1942,24 @@ function onPointMouseDown(e) {
     e.preventDefault();
     
     if (e.features.length > 0) {
-        const pointIndex = e.features[0].properties.index;
+        const props = e.features[0].properties;
+        const pointIndex = props.index;
+        const pointType = props.type;
         
         // Store which point is pressed, but don't activate drag mode yet
         // Drag will activate on first mousemove
         pendingDragIndex = pointIndex;
-        dragStartPoints = editPoints.map(c => [...c]); // Save state for potential drag
+        pendingDragType = pointType;
+        
+        // Save state for potential drag (both main points and branches)
+        dragStartPoints = editPoints.map(c => [...c]);
+        if (window.currentRouteBranches) {
+            dragStartBranches = window.currentRouteBranches.map(b => ({
+                connectionIndex: b.connectionIndex,
+                points: b.points.map(p => [...p])
+            }));
+        }
+        
         hasMovedDuringDrag = false; // Reset on every mousedown
     }
 }
@@ -1249,7 +1969,9 @@ function onPointMouseMove(e) {
     // If mouse is pressed on a point but drag not activated yet, activate it now
     if (pendingDragIndex !== null && draggedPointIndex === null) {
         draggedPointIndex = pendingDragIndex;
+        draggedPointType = pendingDragType;
         pendingDragIndex = null;
+        pendingDragType = null;
         map.getCanvas().style.cursor = 'grabbing';
         map.dragPan.disable();
     }
@@ -1260,50 +1982,99 @@ function onPointMouseMove(e) {
     
     const newCoords = [e.lngLat.lng, e.lngLat.lat];
     
-    // Calculate displacement from original position at drag start
-    const oldCoords = dragStartPoints[draggedPointIndex];
-    const dx = newCoords[0] - oldCoords[0];
-    const dy = newCoords[1] - oldCoords[1];
-    
-    // Update the dragged point
-    editPoints[draggedPointIndex] = newCoords;
-    
-    // Move adjacent points like a chain - each point moves based on its distance
-    const moveRadius = 3; // How many points on each side to affect
-    const isFirstPoint = draggedPointIndex === 0;
-    const isLastPoint = draggedPointIndex === editPoints.length - 1;
-    
-    // Process points before (moving backwards)
-    if (!isFirstPoint) {
-        for (let offset = 1; offset <= moveRadius; offset++) {
-            const idx = draggedPointIndex - offset;
-            if (idx < 0) break;
+    // Check if dragging a branch point
+    if (draggedPointType === 'branch') {
+        // Parse branch index from string like "branch-0-1"
+        const match = draggedPointIndex.toString().match(/branch-(\d+)-(\d+)/);
+        if (match && window.currentRouteBranches && dragStartBranches) {
+            const branchIdx = parseInt(match[1]);
+            const pointIdx = parseInt(match[2]);
             
-            // Lock first point - it should never move unless directly dragged
-            if (idx === 0) break;
-            
-            // Calculate influence: exponential falloff creates more natural chain effect
-            const influence = Math.pow(0.5, offset); // 0.5, 0.25, 0.125...
-            
-            editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
-            editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+            if (branchIdx < window.currentRouteBranches.length) {
+                // Update the branch point
+                window.currentRouteBranches[branchIdx].points[pointIdx] = newCoords;
+                
+                // Move adjacent branch points with chain effect
+                const branch = window.currentRouteBranches[branchIdx];
+                const startBranch = dragStartBranches[branchIdx];
+                const moveRadius = 3;
+                
+                const oldCoords = startBranch.points[pointIdx];
+                const dx = newCoords[0] - oldCoords[0];
+                const dy = newCoords[1] - oldCoords[1];
+                
+                // Move points before
+                for (let offset = 1; offset <= moveRadius; offset++) {
+                    const idx = pointIdx - offset;
+                    if (idx < 0) break;
+                    if (idx === 0) break; // Lock first point of branch
+                    
+                    const influence = Math.pow(0.5, offset);
+                    branch.points[idx][0] = startBranch.points[idx][0] + dx * influence;
+                    branch.points[idx][1] = startBranch.points[idx][1] + dy * influence;
+                }
+                
+                // Move points after
+                for (let offset = 1; offset <= moveRadius; offset++) {
+                    const idx = pointIdx + offset;
+                    if (idx >= branch.points.length) break;
+                    if (idx === branch.points.length - 1) break; // Lock last point
+                    
+                    const influence = Math.pow(0.5, offset);
+                    branch.points[idx][0] = startBranch.points[idx][0] + dx * influence;
+                    branch.points[idx][1] = startBranch.points[idx][1] + dy * influence;
+                }
+            }
         }
-    }
-    
-    // Process points after (moving forwards)
-    if (!isLastPoint) {
-        for (let offset = 1; offset <= moveRadius; offset++) {
-            const idx = draggedPointIndex + offset;
-            if (idx >= editPoints.length) break;
-            
-            // Lock last point - it should never move unless directly dragged
-            if (idx === editPoints.length - 1) break;
-            
-            // Calculate influence: exponential falloff
-            const influence = Math.pow(0.5, offset);
-            
-            editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
-            editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+    } else {
+        // Dragging main line point
+        const pointIndex = typeof draggedPointIndex === 'number' ? draggedPointIndex : parseInt(draggedPointIndex);
+        
+        // Calculate displacement from original position at drag start
+        const oldCoords = dragStartPoints[pointIndex];
+        const dx = newCoords[0] - oldCoords[0];
+        const dy = newCoords[1] - oldCoords[1];
+        
+        // Update the dragged point
+        editPoints[pointIndex] = newCoords;
+        
+        // Move adjacent points like a chain - each point moves based on its distance
+        const moveRadius = 3; // How many points on each side to affect
+        const isFirstPoint = pointIndex === 0;
+        const isLastPoint = pointIndex === editPoints.length - 1;
+        
+        // Process points before (moving backwards)
+        if (!isFirstPoint) {
+            for (let offset = 1; offset <= moveRadius; offset++) {
+                const idx = pointIndex - offset;
+                if (idx < 0) break;
+                
+                // Lock first point - it should never move unless directly dragged
+                if (idx === 0) break;
+                
+                // Calculate influence: exponential falloff creates more natural chain effect
+                const influence = Math.pow(0.5, offset); // 0.5, 0.25, 0.125...
+                
+                editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+                editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+            }
+        }
+        
+        // Process points after (moving forwards)
+        if (!isLastPoint) {
+            for (let offset = 1; offset <= moveRadius; offset++) {
+                const idx = pointIndex + offset;
+                if (idx >= editPoints.length) break;
+                
+                // Lock last point - it should never move unless directly dragged
+                if (idx === editPoints.length - 1) break;
+                
+                // Calculate influence: exponential falloff
+                const influence = Math.pow(0.5, offset);
+                
+                editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+                editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+            }
         }
     }
     
@@ -1332,9 +2103,19 @@ function onPointTouchStart(e) {
     e.preventDefault();
     
     if (e.features.length > 0) {
-        draggedPointIndex = e.features[0].properties.index;
-        // Save original positions at drag start
+        const props = e.features[0].properties;
+        draggedPointIndex = props.index;
+        draggedPointType = props.type;
+        
+        // Save original positions at drag start (both main and branches)
         dragStartPoints = editPoints.map(c => [...c]);
+        if (window.currentRouteBranches) {
+            dragStartBranches = window.currentRouteBranches.map(b => ({
+                connectionIndex: b.connectionIndex,
+                points: b.points.map(p => [...p])
+            }));
+        }
+        
         touchMoved = false; // Reset touch movement tracking
         map.dragPan.disable();
     }
@@ -1352,50 +2133,99 @@ function onPointTouchMove(e) {
     const point = map.unproject([touch.clientX, touch.clientY]);
     const newCoords = [point.lng, point.lat];
     
-    // Calculate displacement from original position at drag start
-    const oldCoords = dragStartPoints[draggedPointIndex];
-    const dx = newCoords[0] - oldCoords[0];
-    const dy = newCoords[1] - oldCoords[1];
-    
-    // Update the dragged point
-    editPoints[draggedPointIndex] = newCoords;
-    
-    // Move adjacent points like a chain - each point moves based on its distance
-    const moveRadius = 3; // How many points on each side to affect
-    const isFirstPoint = draggedPointIndex === 0;
-    const isLastPoint = draggedPointIndex === editPoints.length - 1;
-    
-    // Process points before (moving backwards)
-    if (!isFirstPoint) {
-        for (let offset = 1; offset <= moveRadius; offset++) {
-            const idx = draggedPointIndex - offset;
-            if (idx < 0) break;
+    // Check if dragging a branch point
+    if (draggedPointType === 'branch') {
+        // Parse branch index from string like "branch-0-1"
+        const match = draggedPointIndex.toString().match(/branch-(\d+)-(\d+)/);
+        if (match && window.currentRouteBranches && dragStartBranches) {
+            const branchIdx = parseInt(match[1]);
+            const pointIdx = parseInt(match[2]);
             
-            // Lock first point - it should never move unless directly dragged
-            if (idx === 0) break;
-            
-            // Calculate influence: exponential falloff creates more natural chain effect
-            const influence = Math.pow(0.5, offset);
-            
-            editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
-            editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+            if (branchIdx < window.currentRouteBranches.length) {
+                // Update the branch point
+                window.currentRouteBranches[branchIdx].points[pointIdx] = newCoords;
+                
+                // Move adjacent branch points with chain effect
+                const branch = window.currentRouteBranches[branchIdx];
+                const startBranch = dragStartBranches[branchIdx];
+                const moveRadius = 3;
+                
+                const oldCoords = startBranch.points[pointIdx];
+                const dx = newCoords[0] - oldCoords[0];
+                const dy = newCoords[1] - oldCoords[1];
+                
+                // Move points before
+                for (let offset = 1; offset <= moveRadius; offset++) {
+                    const idx = pointIdx - offset;
+                    if (idx < 0) break;
+                    if (idx === 0) break; // Lock first point of branch
+                    
+                    const influence = Math.pow(0.5, offset);
+                    branch.points[idx][0] = startBranch.points[idx][0] + dx * influence;
+                    branch.points[idx][1] = startBranch.points[idx][1] + dy * influence;
+                }
+                
+                // Move points after
+                for (let offset = 1; offset <= moveRadius; offset++) {
+                    const idx = pointIdx + offset;
+                    if (idx >= branch.points.length) break;
+                    if (idx === branch.points.length - 1) break; // Lock last point
+                    
+                    const influence = Math.pow(0.5, offset);
+                    branch.points[idx][0] = startBranch.points[idx][0] + dx * influence;
+                    branch.points[idx][1] = startBranch.points[idx][1] + dy * influence;
+                }
+            }
         }
-    }
-    
-    // Process points after (moving forwards)
-    if (!isLastPoint) {
-        for (let offset = 1; offset <= moveRadius; offset++) {
-            const idx = draggedPointIndex + offset;
-            if (idx >= editPoints.length) break;
-            
-            // Lock last point - it should never move unless directly dragged
-            if (idx === editPoints.length - 1) break;
-            
-            // Calculate influence: exponential falloff
-            const influence = Math.pow(0.5, offset);
-            
-            editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
-            editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+    } else {
+        // Dragging main line point
+        const pointIndex = typeof draggedPointIndex === 'number' ? draggedPointIndex : parseInt(draggedPointIndex);
+        
+        // Calculate displacement from original position at drag start
+        const oldCoords = dragStartPoints[pointIndex];
+        const dx = newCoords[0] - oldCoords[0];
+        const dy = newCoords[1] - oldCoords[1];
+        
+        // Update the dragged point
+        editPoints[pointIndex] = newCoords;
+        
+        // Move adjacent points like a chain - each point moves based on its distance
+        const moveRadius = 3; // How many points on each side to affect
+        const isFirstPoint = pointIndex === 0;
+        const isLastPoint = pointIndex === editPoints.length - 1;
+        
+        // Process points before (moving backwards)
+        if (!isFirstPoint) {
+            for (let offset = 1; offset <= moveRadius; offset++) {
+                const idx = pointIndex - offset;
+                if (idx < 0) break;
+                
+                // Lock first point - it should never move unless directly dragged
+                if (idx === 0) break;
+                
+                // Calculate influence: exponential falloff creates more natural chain effect
+                const influence = Math.pow(0.5, offset);
+                
+                editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+                editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+            }
+        }
+        
+        // Process points after (moving forwards)
+        if (!isLastPoint) {
+            for (let offset = 1; offset <= moveRadius; offset++) {
+                const idx = pointIndex + offset;
+                if (idx >= editPoints.length) break;
+                
+                // Lock last point - it should never move unless directly dragged
+                if (idx === editPoints.length - 1) break;
+                
+                // Calculate influence: exponential falloff
+                const influence = Math.pow(0.5, offset);
+                
+                editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+                editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+            }
         }
     }
     
@@ -1406,7 +2236,9 @@ function onPointTouchMove(e) {
 function onPointTouchEnd() {
     if (draggedPointIndex !== null) {
         draggedPointIndex = null;
+        draggedPointType = null;
         dragStartPoints = null;
+        dragStartBranches = null;
         map.dragPan.enable();
         // Don't reset touchMoved here - let the tap handler check it
     }
@@ -1483,8 +2315,18 @@ function saveProperties() {
     
     // Use edited points if in curve editing mode
     let controlPoints = null;
+    let branches = null;
     if (isEditingCurve && editPoints.length > 0) {
         controlPoints = editPoints.map(p => [...p]);
+        
+        // Save branch information if it exists
+        if (window.currentRouteBranches && window.currentRouteBranches.length > 0) {
+            branches = window.currentRouteBranches.map(b => ({
+                connectionIndex: b.connectionIndex,
+                points: b.points.map(p => [...p])
+            }));
+        }
+        
         const coords = curveMode ? smoothLineString(editPoints) : editPoints;
         geometry = {
             type: 'LineString',
@@ -1499,6 +2341,10 @@ function saveProperties() {
             const existingFeature = customRoutes.find(f => f.id === currentFeatureId);
             if (existingFeature) {
                 geometry = existingFeature.geometry;
+                // Preserve existing branches if any
+                if (existingFeature.properties.branches) {
+                    branches = existingFeature.properties.branches;
+                }
             } else {
                 console.error('No feature found to save');
                 return;
@@ -1523,7 +2369,8 @@ function saveProperties() {
             featureId: currentFeatureId,
             name: name,
             description: description,
-            controlPoints: controlPoints
+            controlPoints: controlPoints,
+            branches: branches  // Store branch information
         }
     };
     
@@ -1542,15 +2389,44 @@ function saveProperties() {
         draw.delete(currentFeatureId);
     }
     
-    // Add to custom routes
-    const existingIndex = customRoutes.findIndex(f => f.id === currentFeatureId);
+    // Update or add to custom routes
+    // If we're editing an existing route, use the original ID
+    const featureIdToSave = window.originalFeatureId || currentFeatureId;
+    
+    // Update the feature ID to match the original
+    feature.id = featureIdToSave;
+    feature.properties.id = featureIdToSave;
+    feature.properties.featureId = featureIdToSave;
+    
+    const existingIndex = customRoutes.findIndex(f => f.id === featureIdToSave);
+    
     if (existingIndex >= 0) {
         customRoutes[existingIndex] = feature;
     } else {
         customRoutes.push(feature);
     }
     
+    // Clean up: remove any duplicate routes with different IDs (safety check)
+    if (window.originalFeatureId && window.originalFeatureId !== currentFeatureId) {
+        const duplicateIndex = customRoutes.findIndex(f => f.id === currentFeatureId && f.id !== featureIdToSave);
+        if (duplicateIndex >= 0) {
+            customRoutes.splice(duplicateIndex, 1);
+        }
+    }
+    
+    // Clear the original ID tracker
+    window.originalFeatureId = null;
+    
     saveRoutesToStorage();
+    
+    // Clear and refresh to prevent duplicates
+    if (map.getSource('custom-routes')) {
+        map.getSource('custom-routes').setData({
+            type: 'FeatureCollection',
+            features: []
+        });
+    }
+    
     refreshCustomRoutes();
     
     // Hide properties panel
@@ -1576,8 +2452,15 @@ function cancelProperties() {
         draw.delete(currentFeatureId);
     }
     
+    // If we were editing an existing route, restore it to display
+    if (window.originalFeatureId) {
+        refreshCustomRoutes();
+    }
+    
     currentFeatureId = null;
+    window.originalFeatureId = null;  // Clear original ID tracker
     editPoints = [];
+    window.currentRouteBranches = [];  // Clear branches
     
     // Reset form
     document.getElementById('line-name').value = '';
@@ -1591,9 +2474,72 @@ function cancelProperties() {
 function refreshCustomRoutes() {
     if (!map.getSource('custom-routes')) return;
     
+    // Convert routes with branches to MultiLineString for display
+    const displayFeatures = customRoutes.map(feature => {
+        if (feature.geometry.type === 'LineString' && 
+            feature.properties.branches && 
+            feature.properties.branches.length > 0) {
+            
+            // Create MultiLineString with main line and all branches
+            const lines = [feature.geometry.coordinates];
+            
+            // Determine if this route was created with curve smoothing
+            const hasCurveSmoothing = feature.properties.controlPoints && 
+                                     feature.properties.controlPoints.length > 0;
+            
+            // Add each branch as a separate line
+            const controlPoints = feature.properties.controlPoints || feature.geometry.coordinates;
+            for (const branch of feature.properties.branches) {
+                let connectionPoint = null;
+                
+                // Check if connection is to main line (number) or another branch (string)
+                if (typeof branch.connectionIndex === 'number') {
+                    // Connection to main line
+                    if (branch.connectionIndex < controlPoints.length) {
+                        connectionPoint = controlPoints[branch.connectionIndex];
+                    }
+                } else if (typeof branch.connectionIndex === 'string' && branch.connectionIndex.startsWith('branch-')) {
+                    // Connection to another branch - parse the string
+                    const match = branch.connectionIndex.match(/branch-(\d+)-(\d+)/);
+                    if (match && feature.properties.branches) {
+                        const branchIdx = parseInt(match[1]);
+                        const pointIdx = parseInt(match[2]);
+                        if (branchIdx < feature.properties.branches.length) {
+                            const targetBranch = feature.properties.branches[branchIdx];
+                            if (pointIdx < targetBranch.points.length) {
+                                connectionPoint = targetBranch.points[pointIdx];
+                            }
+                        }
+                    }
+                }
+                
+                if (connectionPoint) {
+                    const branchControlPoints = [connectionPoint, ...branch.points];
+                    
+                    // Apply smoothing if the route was created with curve mode
+                    const branchLine = hasCurveSmoothing ? 
+                        smoothLineString(branchControlPoints) : 
+                        branchControlPoints;
+                    
+                    lines.push(branchLine);
+                }
+            }
+            
+            return {
+                ...feature,
+                geometry: {
+                    type: 'MultiLineString',
+                    coordinates: lines
+                }
+            };
+        }
+        
+        return feature;
+    });
+    
     map.getSource('custom-routes').setData({
         type: 'FeatureCollection',
-        features: customRoutes
+        features: displayFeatures
     });
 }
 

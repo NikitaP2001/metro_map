@@ -1,0 +1,10 @@
+﻿<svg width="192" height="192" xmlns="http://www.w3.org/2000/svg">
+  <rect width="192" height="192" fill="#2c3e50"/>
+  <circle cx="96" cy="75" r="22" fill="#e74c3c"/>
+  <path d="M 75 105 Q 96 120 117 105" stroke="#3498db" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <path d="M 56 131 L 136 131" stroke="#2ecc71" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="56" cy="131" r="5" fill="#2ecc71"/>
+  <circle cx="96" cy="131" r="5" fill="#2ecc71"/>
+  <circle cx="136" cy="131" r="5" fill="#2ecc71"/>
+  <text x="96" y="165" font-family="Arial" font-size="18" font-weight="bold" text-anchor="middle" fill="white">METRO</text>
+</svg>

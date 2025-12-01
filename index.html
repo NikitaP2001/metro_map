@@ -49,7 +49,6 @@
             </button>
             <button id="draw-line" class="btn">Draw Line</button>
             <button id="draw-polygon" class="btn">Draw Station</button>
-            <button id="delete-feature" class="btn btn-danger">Delete</button>
         </div>
         
         <div class="control-group" style="display: flex; gap: 10px;">
@@ -60,10 +59,6 @@
         
         <div class="control-group">
             <button id="clear-all-routes" class="btn btn-danger">Clear All Routes</button>
-        </div>
-        
-        <div class="control-group">
-            <button id="toggle-panel" class="btn-collapse">◀</button>
         </div>
     </div>
     
@@ -88,10 +83,7 @@
     
     <!-- Properties Panel (shown when drawing) -->
     <div id="properties-panel" class="properties-panel" style="display: none;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-            <h3 style="margin: 0;">Route Properties</h3>
-            <button id="toggle-properties-panel" class="btn-collapse" style="margin: 0;">▼</button>
-        </div>
+        <h3>Route Properties</h3>
         
         <div class="form-group">
             <label for="line-name">Line Name:</label>

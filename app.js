@@ -12,8 +12,15 @@ let isEditingCurve = false;
 let editPoints = [];
 let draggedPointIndex = null;
 let dragStartPoints = null;
+let hasMovedDuringDrag = false; // Track if point actually moved during drag
+let pendingDragIndex = null; // Index of point with mouse pressed (not dragging yet)
+let justDeletedPoint = false; // Prevent line dblclick from firing right after point delete
+let lastTapTime = 0; // For detecting double-tap on mobile
+let lastTapTarget = null; // Track what was tapped
+let touchMoved = false; // Track if touch moved (drag vs tap)
 let tempLayerId = 'temp-edit-layer';
 let tempPointsLayerId = 'temp-edit-points';
+let currentPopup = null; // Track the current popup to close it when opening a new one
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', () => {
@@ -256,6 +263,16 @@ function initializeMap() {
         // Add click handlers
         setupMapClickHandlers();
         
+        // Prevent double-click zoom when in curve editing mode
+        map.on('dblclick', (e) => {
+            if (isEditingCurve) {
+                e.preventDefault();
+                if (e.originalEvent) {
+                    e.originalEvent.stopPropagation();
+                }
+            }
+        });
+        
         // Load stored routes
         refreshCustomRoutes();
     });
@@ -350,7 +367,6 @@ function setupEventListeners() {
     // Drawing controls
     document.getElementById('draw-line').addEventListener('click', () => startDrawing('LineString'));
     document.getElementById('draw-polygon').addEventListener('click', () => startDrawing('Polygon'));
-    document.getElementById('delete-feature').addEventListener('click', deleteSelectedFeature);
     
     // Export/Import
     document.getElementById('export-geojson').addEventListener('click', exportGeoJSON);
@@ -364,10 +380,8 @@ function setupEventListeners() {
     document.getElementById('save-properties').addEventListener('click', saveProperties);
     document.getElementById('cancel-properties').addEventListener('click', cancelProperties);
     
-    // Panel collapse
-    document.getElementById('toggle-panel').addEventListener('click', toggleControlsPanel);
+    // Show panel buttons
     document.getElementById('show-panel').addEventListener('click', toggleControlsPanel);
-    document.getElementById('toggle-properties-panel').addEventListener('click', togglePropertiesPanel);
     document.getElementById('show-properties').addEventListener('click', togglePropertiesPanel);
     
     // Auto-hide panels on mouse leave
@@ -490,6 +504,11 @@ function setupMapClickHandlers() {
 
 // Show feature popup
 function showFeaturePopup(e) {
+    // Don't show popup if we're in curve editing mode
+    if (isEditingCurve) {
+        return;
+    }
+    
     const feature = e.features[0];
     const props = feature.properties;
     
@@ -539,10 +558,21 @@ function showFeaturePopup(e) {
     html += `<button onclick="window.deleteExistingRoute('${featureId}')" style="flex: 1; padding: 5px 10px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer;">Delete</button>`;
     html += '</div>';
     
-    new maplibregl.Popup()
+    // Close existing popup if any
+    if (currentPopup) {
+        currentPopup.remove();
+    }
+    
+    // Create and track new popup
+    currentPopup = new maplibregl.Popup()
         .setLngLat(e.lngLat)
         .setHTML(html)
         .addTo(map);
+    
+    // Clear reference when popup is closed
+    currentPopup.on('close', () => {
+        currentPopup = null;
+    });
 }
 
 // Toggle curve mode
@@ -785,6 +815,8 @@ function enableCurveEditing() {
     if (isEditingCurve) return;
     isEditingCurve = true;
     
+    console.log('ENABLING CURVE EDITING - editPoints:', editPoints.length);
+    
     // Hide the draw feature temporarily
     if (draw.get(currentFeatureId)) {
         draw.delete(currentFeatureId);
@@ -792,6 +824,7 @@ function enableCurveEditing() {
     
     // Add temporary layers for editing
     if (!map.getSource(tempLayerId)) {
+        console.log('Creating temp layers for editing');
         map.addSource(tempLayerId, {
             type: 'geojson',
             data: {
@@ -811,6 +844,18 @@ function enableCurveEditing() {
             }
         });
         
+        // Make line layer interactive for double-click (add before points so points are on top)
+        map.addLayer({
+            id: tempLayerId + '-hitarea',
+            type: 'line',
+            source: tempLayerId,
+            paint: {
+                'line-color': 'transparent',
+                'line-width': 20, // Wider hit area
+                'line-opacity': 0
+            }
+        });
+        
         map.addSource(tempPointsLayerId, {
             type: 'geojson',
             data: {
@@ -824,10 +869,34 @@ function enableCurveEditing() {
             type: 'circle',
             source: tempPointsLayerId,
             paint: {
-                'circle-radius': 8,
+                'circle-radius': 10,
                 'circle-color': '#ffffff',
                 'circle-stroke-color': '#3498db',
                 'circle-stroke-width': 3
+            }
+        });
+        
+        // Add medium invisible hit area for double-click (easier to hit than visual point)
+        map.addLayer({
+            id: tempPointsLayerId + '-dblclick',
+            type: 'circle',
+            source: tempPointsLayerId,
+            paint: {
+                'circle-radius': 15, // Medium hit area for double-click
+                'circle-color': 'transparent',
+                'circle-opacity': 0
+            }
+        });
+        
+        // Add larger invisible hit area for dragging
+        map.addLayer({
+            id: tempPointsLayerId + '-hitarea',
+            type: 'circle',
+            source: tempPointsLayerId,
+            paint: {
+                'circle-radius': 20, // Larger hit area for drag
+                'circle-color': 'transparent',
+                'circle-opacity': 0
             }
         });
     }
@@ -835,20 +904,33 @@ function enableCurveEditing() {
     // Update display
     updateCurveDisplay();
     
-    // Add event listeners for dragging (mouse and touch)
-    map.on('mousedown', tempPointsLayerId, onPointMouseDown);
-    map.on('touchstart', tempPointsLayerId, onPointTouchStart);
+    // Add event listeners for dragging (mouse and touch) - use hit areas for easier dragging
+    const pointHitArea = tempPointsLayerId + '-hitarea';
+    const pointDblClickArea = tempPointsLayerId + '-dblclick';
+    
+    console.log('Curve editing enabled - layers created, points:', editPoints.length);
+    console.log('Attached dblclick handler to layer:', pointDblClickArea);
+    map.on('mousedown', pointHitArea, onPointMouseDown);
+    map.on('touchstart', pointHitArea, onPointTouchStart);
     map.on('mousemove', onPointMouseMove);
     map.on('touchmove', onPointTouchMove);
     map.on('mouseup', onPointMouseUp);
     map.on('touchend', onPointTouchEnd);
     
+    // Add double-click handlers - use medium-sized layer for balance between precision and usability
+    map.on('dblclick', pointDblClickArea, onPointDoubleClick);
+    map.on('dblclick', tempLayerId + '-hitarea', onLineDoubleClick);
+    
+    // Add touch handlers for mobile (double-tap detection)
+    map.on('touchend', pointDblClickArea, onPointTouchTap);
+    map.on('touchend', tempLayerId + '-hitarea', onLineTouchTap);
+    
     // Change cursor on hover
-    map.on('mouseenter', tempPointsLayerId, () => {
+    map.on('mouseenter', pointHitArea, () => {
         map.getCanvas().style.cursor = 'grab';
     });
     
-    map.on('mouseleave', tempPointsLayerId, () => {
+    map.on('mouseleave', pointHitArea, () => {
         if (draggedPointIndex === null) {
             map.getCanvas().style.cursor = '';
         }
@@ -860,15 +942,22 @@ function disableCurveEditing() {
     if (!isEditingCurve) return;
     isEditingCurve = false;
     
+    const pointHitArea = tempPointsLayerId + '-hitarea';
+    const pointDblClickArea = tempPointsLayerId + '-dblclick';
+    
     // Remove event listeners
-    map.off('mousedown', tempPointsLayerId, onPointMouseDown);
-    map.off('touchstart', tempPointsLayerId, onPointTouchStart);
+    map.off('mousedown', pointHitArea, onPointMouseDown);
+    map.off('touchstart', pointHitArea, onPointTouchStart);
     map.off('mousemove', onPointMouseMove);
     map.off('touchmove', onPointTouchMove);
     map.off('mouseup', onPointMouseUp);
     map.off('touchend', onPointTouchEnd);
-    map.off('mouseenter', tempPointsLayerId);
-    map.off('mouseleave', tempPointsLayerId);
+    map.off('dblclick', pointDblClickArea, onPointDoubleClick);
+    map.off('dblclick', tempLayerId + '-hitarea', onLineDoubleClick);
+    map.off('touchend', pointDblClickArea, onPointTouchTap);
+    map.off('touchend', tempLayerId + '-hitarea', onLineTouchTap);
+    map.off('mouseenter', pointHitArea);
+    map.off('mouseleave', pointHitArea);
     
     // Clear temporary layers
     if (map.getSource(tempLayerId)) {
@@ -912,10 +1001,232 @@ function updateCurveDisplay() {
         }
     }));
     
+    console.log('UPDATE: Setting', pointFeatures.length, 'control points on map');
+    
     map.getSource(tempPointsLayerId).setData({
         type: 'FeatureCollection',
         features: pointFeatures
     });
+}
+
+// Double-click on point to remove it
+function onPointDoubleClick(e) {
+    console.log('POINT DOUBLE-CLICK FIRED!', e.features[0]?.properties);
+    
+    e.preventDefault();
+    if (e.originalEvent) {
+        e.originalEvent.preventDefault();
+        e.originalEvent.stopImmediatePropagation();
+    }
+    
+    // Clear any pending or active drag state
+    if (pendingDragIndex !== null) {
+        pendingDragIndex = null;
+        dragStartPoints = null;
+    }
+    if (draggedPointIndex !== null) {
+        draggedPointIndex = null;
+        dragStartPoints = null;
+        map.dragPan.enable();
+    }
+    
+    // Don't delete if we just finished dragging the point
+    if (hasMovedDuringDrag) {
+        hasMovedDuringDrag = false;
+        return;
+    }
+    
+    if (!isEditingCurve) return;
+    if (editPoints.length <= 2) return; // Need at least 2 points for a line
+    
+    const pointIndex = e.features[0].properties.index;
+    editPoints.splice(pointIndex, 1);
+    updateCurveDisplay();
+    
+    // Set flag to prevent line dblclick from immediately adding point back
+    justDeletedPoint = true;
+    setTimeout(() => { justDeletedPoint = false; }, 100);
+    
+    // Reset the flag after processing
+    hasMovedDuringDrag = false;
+}
+
+// Mobile: Double-tap on point to remove it
+function onPointTouchTap(e) {
+    // CRITICAL: Stop event from reaching line tap handler FIRST (before any returns)
+    if (e.originalEvent) {
+        e.originalEvent.preventDefault();
+        e.originalEvent.stopImmediatePropagation();
+    }
+    e.preventDefault();
+    
+    if (!isEditingCurve) return;
+    if (e.originalEvent.touches.length > 0) return; // Still touching
+    
+    // Don't process tap if touch moved (was a drag)
+    if (touchMoved) {
+        touchMoved = false;
+        return;
+    }
+    
+    const now = Date.now();
+    const timeSinceLastTap = now - lastTapTime;
+    const tapDelay = 300; // ms between taps to count as double-tap
+    
+    // Check if this is a double-tap on the same point
+    const featureId = e.features[0]?.properties?.index;
+    const isDoubleTap = timeSinceLastTap < tapDelay && lastTapTarget === featureId;
+    
+    console.log('Point tap:', featureId, 'isDoubleTap:', isDoubleTap, 'timeSince:', timeSinceLastTap);
+    
+    lastTapTime = now;
+    lastTapTarget = featureId;
+    
+    if (isDoubleTap && featureId !== undefined) {
+        console.log('MOBILE: Double-tap on point', featureId, '- DELETING');
+        
+        // Don't delete if we just finished dragging
+        if (hasMovedDuringDrag) {
+            hasMovedDuringDrag = false;
+            return;
+        }
+        
+        if (editPoints.length <= 2) return; // Need at least 2 points
+        
+        editPoints.splice(featureId, 1);
+        updateCurveDisplay();
+        
+        // Set flag to prevent line tap from adding point back
+        justDeletedPoint = true;
+        setTimeout(() => { justDeletedPoint = false; }, 100);
+        
+        // Reset for next tap
+        lastTapTime = 0;
+        lastTapTarget = null;
+    }
+}
+
+// Mobile: Double-tap on line to add new point
+function onLineTouchTap(e) {
+    // CRITICAL: Prevent zoom FIRST, before any logic or returns
+    if (e.originalEvent) {
+        e.originalEvent.preventDefault();
+        e.originalEvent.stopImmediatePropagation();
+    }
+    e.preventDefault();
+    
+    if (!isEditingCurve) return;
+    if (e.originalEvent.touches.length > 0) return; // Still touching
+    
+    // CRITICAL: Don't process if we just handled a point tap (point layer fires before line layer)
+    // If lastTapTarget is a number (point index), this tap is from the same touch event on the point
+    if (typeof lastTapTarget === 'number') {
+        console.log('Ignoring line tap - already handled by point tap');
+        return;
+    }
+    
+    // Don't add point if we just deleted one
+    if (justDeletedPoint) {
+        console.log('Ignoring line tap - just deleted a point');
+        return;
+    }
+    
+    const now = Date.now();
+    const timeSinceLastTap = now - lastTapTime;
+    const tapDelay = 300; // ms between taps to count as double-tap
+    
+    const isDoubleTap = timeSinceLastTap < tapDelay && lastTapTarget === 'line';
+    
+    console.log('Line tap - isDoubleTap:', isDoubleTap, 'timeSince:', timeSinceLastTap);
+    
+    lastTapTime = now;
+    lastTapTarget = 'line';
+    
+    if (isDoubleTap) {
+        console.log('MOBILE: Double-tap on line - ADDING POINT');
+        
+        const clickCoords = [e.lngLat.lng, e.lngLat.lat];
+        
+        // Find the closest segment to insert the point
+        let minDistance = Infinity;
+        let insertIndex = 1;
+        
+        for (let i = 0; i < editPoints.length - 1; i++) {
+            const segmentStart = editPoints[i];
+            const segmentEnd = editPoints[i + 1];
+            
+            const midpoint = [
+                (segmentStart[0] + segmentEnd[0]) / 2,
+                (segmentStart[1] + segmentEnd[1]) / 2
+            ];
+            
+            const distance = Math.sqrt(
+                Math.pow(clickCoords[0] - midpoint[0], 2) +
+                Math.pow(clickCoords[1] - midpoint[1], 2)
+            );
+            
+            if (distance < minDistance) {
+                minDistance = distance;
+                insertIndex = i + 1;
+            }
+        }
+        
+        // Insert the new point
+        editPoints.splice(insertIndex, 0, clickCoords);
+        updateCurveDisplay();
+        
+        // Reset for next tap
+        lastTapTime = 0;
+        lastTapTarget = null;
+    }
+}
+
+// Double-click on line to add new point
+function onLineDoubleClick(e) {
+    if (e.originalEvent) {
+        e.originalEvent.preventDefault();
+        e.originalEvent.stopPropagation();
+    }
+    e.preventDefault();
+    
+    if (!isEditingCurve) return;
+    
+    // Don't add point if we just deleted one (prevents immediate re-add)
+    if (justDeletedPoint) {
+        console.log('Ignoring line dblclick - just deleted a point');
+        return;
+    }
+    
+    const clickCoords = [e.lngLat.lng, e.lngLat.lat];
+    
+    // Find the closest segment to insert the point
+    let minDistance = Infinity;
+    let insertIndex = 1;
+    
+    for (let i = 0; i < editPoints.length - 1; i++) {
+        const segmentStart = editPoints[i];
+        const segmentEnd = editPoints[i + 1];
+        
+        // Calculate distance from click point to segment midpoint
+        const midpoint = [
+            (segmentStart[0] + segmentEnd[0]) / 2,
+            (segmentStart[1] + segmentEnd[1]) / 2
+        ];
+        
+        const distance = Math.sqrt(
+            Math.pow(clickCoords[0] - midpoint[0], 2) +
+            Math.pow(clickCoords[1] - midpoint[1], 2)
+        );
+        
+        if (distance < minDistance) {
+            minDistance = distance;
+            insertIndex = i + 1;
+        }
+    }
+    
+    // Insert the new point
+    editPoints.splice(insertIndex, 0, clickCoords);
+    updateCurveDisplay();
 }
 
 // Mouse down on point
@@ -923,17 +1234,29 @@ function onPointMouseDown(e) {
     e.preventDefault();
     
     if (e.features.length > 0) {
-        draggedPointIndex = e.features[0].properties.index;
-        // Save original positions at drag start
-        dragStartPoints = editPoints.map(c => [...c]);
-        map.getCanvas().style.cursor = 'grabbing';
-        map.dragPan.disable();
+        const pointIndex = e.features[0].properties.index;
+        
+        // Store which point is pressed, but don't activate drag mode yet
+        // Drag will activate on first mousemove
+        pendingDragIndex = pointIndex;
+        dragStartPoints = editPoints.map(c => [...c]); // Save state for potential drag
+        hasMovedDuringDrag = false; // Reset on every mousedown
     }
 }
 
 // Mouse move
 function onPointMouseMove(e) {
+    // If mouse is pressed on a point but drag not activated yet, activate it now
+    if (pendingDragIndex !== null && draggedPointIndex === null) {
+        draggedPointIndex = pendingDragIndex;
+        pendingDragIndex = null;
+        map.getCanvas().style.cursor = 'grabbing';
+        map.dragPan.disable();
+    }
+    
     if (draggedPointIndex === null || !dragStartPoints) return;
+    
+    hasMovedDuringDrag = true; // Mark that we actually moved
     
     const newCoords = [e.lngLat.lng, e.lngLat.lat];
     
@@ -989,11 +1312,18 @@ function onPointMouseMove(e) {
 
 // Mouse up
 function onPointMouseUp() {
+    // Clear pending drag if mouse released without moving
+    if (pendingDragIndex !== null) {
+        pendingDragIndex = null;
+        dragStartPoints = null;
+    }
+    
     if (draggedPointIndex !== null) {
         draggedPointIndex = null;
         dragStartPoints = null;
         map.getCanvas().style.cursor = 'grab';
         map.dragPan.enable();
+        // Note: hasMovedDuringDrag is kept until next mousedown or dblclick uses it
     }
 }
 
@@ -1005,6 +1335,7 @@ function onPointTouchStart(e) {
         draggedPointIndex = e.features[0].properties.index;
         // Save original positions at drag start
         dragStartPoints = editPoints.map(c => [...c]);
+        touchMoved = false; // Reset touch movement tracking
         map.dragPan.disable();
     }
 }
@@ -1014,6 +1345,8 @@ function onPointTouchMove(e) {
     if (draggedPointIndex === null || !dragStartPoints) return;
     
     e.preventDefault();
+    
+    touchMoved = true; // Mark that touch moved (this is a drag, not a tap)
     
     const touch = e.originalEvent.touches[0];
     const point = map.unproject([touch.clientX, touch.clientY]);
@@ -1075,6 +1408,7 @@ function onPointTouchEnd() {
         draggedPointIndex = null;
         dragStartPoints = null;
         map.dragPan.enable();
+        // Don't reset touchMoved here - let the tap handler check it
     }
 }
 
@@ -1345,14 +1679,12 @@ function clearAllRoutes() {
 function toggleControlsPanel() {
     const controlsPanel = document.querySelector('.controls-panel');
     const propertiesPanel = document.getElementById('properties-panel');
-    const toggleButton = document.getElementById('toggle-panel');
     const showButton = document.getElementById('show-panel');
     const showPropertiesBtn = document.getElementById('show-properties');
     
     controlsPanel.classList.toggle('collapsed');
     const isCollapsed = controlsPanel.classList.contains('collapsed');
     
-    toggleButton.textContent = isCollapsed ? '▶' : '◀';
     showButton.style.display = isCollapsed ? 'block' : 'none';
     
     // Update properties panel and button position based on controls panel state
@@ -1392,14 +1724,12 @@ function toggleControlsPanel() {
 // Toggle properties panel
 function togglePropertiesPanel() {
     const panel = document.getElementById('properties-panel');
-    const button = document.getElementById('toggle-properties-panel');
     const showPropertiesBtn = document.getElementById('show-properties');
     const controlsPanel = document.getElementById('controls-panel');
     
     panel.classList.toggle('collapsed');
     const isCollapsed = panel.classList.contains('collapsed');
     
-    button.textContent = isCollapsed ? '▼' : '▲';
     showPropertiesBtn.style.display = isCollapsed ? 'block' : 'none';
     
     // Update position based on controls panel state

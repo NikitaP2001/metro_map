@@ -54,8 +54,8 @@ body {
 /* Controls Panel */
 .controls-panel {
     position: absolute;
-    top: 20px;
-    right: 20px;
+    top: 10px;
+    left: 10px;
     background: white;
     padding: 20px;
     border-radius: 8px;
@@ -66,7 +66,7 @@ body {
 }
 
 .controls-panel.collapsed {
-    transform: translateX(calc(100% + 20px));
+    transform: translateX(calc(-100% - 20px));
 }
 
 .controls-panel h3 {
@@ -87,27 +87,26 @@ body {
 /* Properties Panel */
 .properties-panel {
     position: absolute;
-    top: 20px;
+    top: 350px;
     left: 20px;
     background: white;
     padding: 20px;
     border-radius: 8px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-    z-index: 100;
+    z-index: 98;
     max-width: 300px;
-    transition: transform 0.3s ease, height 0.3s ease;
-    max-height: 90vh;
+    transition: transform 0.3s ease, top 0.3s ease;
+    max-height: calc(100vh - 370px);
     overflow-y: auto;
 }
 
-.properties-panel.collapsed {
-    height: auto;
-    overflow: hidden;
+.properties-panel.controls-hidden {
+    top: 80px;
+    max-height: calc(100vh - 100px);
 }
 
-.properties-panel.collapsed .form-group,
-.properties-panel.collapsed .button-group {
-    display: none;
+.properties-panel.collapsed {
+    transform: translateX(calc(-100% - 20px));
 }
 
 .properties-panel h3 {
@@ -212,7 +211,7 @@ body {
 .show-panel-btn {
     position: absolute;
     top: 20px;
-    right: 20px;
+    left: 20px;
     width: 50px;
     height: 50px;
     padding: 0;
@@ -230,7 +229,38 @@ body {
     transition: all 0.3s ease;
 }
 
-.show-panel-btn:hover {
+/* Show Properties Panel Button */
+.show-properties-btn {
+    position: absolute;
+    top: 350px;
+    left: 20px;
+    width: 50px;
+    height: 50px;
+    padding: 0;
+    background: white;
+    color: #333;
+    font-size: 24px;
+    border: none;
+    border-radius: 50%;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 97;
+    transition: all 0.3s ease;
+}
+
+.show-properties-btn.controls-hidden {
+    top: 80px;
+}
+
+.show-properties-btn.controls-visible {
+    top: 350px;
+}
+
+.show-panel-btn:hover,
+.show-properties-btn:hover {
     background: #f8f9fa;
     transform: scale(1.1);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
@@ -354,4 +384,104 @@ input[type="color"]::-webkit-color-swatch-wrapper {
 input[type="color"]::-webkit-color-swatch {
     border: 1px solid #ddd;
     border-radius: 2px;
+}
+
+/* PWA Install Banner */
+.install-banner {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: white;
+    padding: 15px 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    max-width: 400px;
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        transform: translateX(-50%) translateY(-100px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(-50%) translateY(0);
+        opacity: 1;
+    }
+}
+
+.install-content {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.install-icon {
+    font-size: 32px;
+}
+
+.install-text {
+    flex: 1;
+}
+
+.install-text strong {
+    display: block;
+    font-size: 16px;
+    margin-bottom: 4px;
+    color: #333;
+}
+
+.install-text p {
+    margin: 0;
+    font-size: 13px;
+    color: #666;
+}
+
+.btn-close {
+    background: none;
+    border: none;
+    font-size: 20px;
+    color: #999;
+    cursor: pointer;
+    padding: 5px;
+    line-height: 1;
+}
+
+.btn-close:hover {
+    color: #333;
+}
+
+/* Offline Indicator */
+.offline-indicator {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: #ff9800;
+    color: white;
+    padding: 10px 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    animation: slideUp 0.3s ease-out;
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateY(100px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.offline-icon {
+    font-size: 20px;
 }

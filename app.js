@@ -22,8 +22,156 @@ document.addEventListener('DOMContentLoaded', () => {
     loadStoredRoutes();
 });
 
+// Google Geolocation API key (free tier: 40,000 requests/month)
+// If you have a Google API key, replace 'YOUR_API_KEY' with your actual key
+// Get one at: https://console.cloud.google.com/apis/credentials
+const GOOGLE_GEOLOCATION_API_KEY = null; // Set to your API key or leave null for browser fallback
+
+// Custom geolocation using Google API with fallback
+async function getAccurateLocation() {
+    // Try Google Geolocation API first if API key is available
+    if (GOOGLE_GEOLOCATION_API_KEY) {
+        try {
+            // Collect WiFi access points for better accuracy (if available)
+            const requestBody = {
+                considerIp: true
+            };
+            
+            const response = await fetch(
+                `https://www.googleapis.com/geolocation/v1/geolocate?key=${GOOGLE_GEOLOCATION_API_KEY}`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
+                }
+            );
+            
+            if (response.ok) {
+                const data = await response.json();
+                return {
+                    latitude: data.location.lat,
+                    longitude: data.location.lng,
+                    accuracy: data.accuracy,
+                    source: 'google'
+                };
+            }
+        } catch (error) {
+            console.warn('Google Geolocation failed, falling back to browser:', error);
+        }
+    }
+    
+    // Fallback to browser geolocation API
+    return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+            reject(new Error('Geolocation not supported'));
+            return;
+        }
+        
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                resolve({
+                    latitude: position.coords.latitude,
+                    longitude: position.coords.longitude,
+                    accuracy: position.coords.accuracy,
+                    source: 'browser'
+                });
+            },
+            (error) => {
+                reject(error);
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            }
+        );
+    });
+}
+
+// Add custom geolocation control button
+function addCustomGeolocateControl() {
+    // Create control container
+    const geolocateControl = document.createElement('div');
+    geolocateControl.className = 'maplibregl-ctrl maplibregl-ctrl-group';
+    
+    // Create button
+    const button = document.createElement('button');
+    button.className = 'maplibregl-ctrl-geolocate';
+    button.type = 'button';
+    button.title = 'Find my location';
+    button.setAttribute('aria-label', 'Find my location');
+    
+    // Add icon (using SVG)
+    button.innerHTML = `
+        <svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+            <path d="M10 4C9 4 9 5 9 5L9 5.1A5 5 0 0 0 5.1 9L5 9C5 9 4 9 4 10 4 11 5 11 5 11L5.1 11A5 5 0 0 0 9 14.9L9 15C9 15 9 16 10 16 11 16 11 15 11 15L11 14.9A5 5 0 0 0 14.9 11L15 11C15 11 16 11 16 10 16 9 15 9 15 9L14.9 9A5 5 0 0 0 11 5.1L11 5C11 5 11 4 10 4zM10 6.5A3.5 3.5 0 0 1 13.5 10 3.5 3.5 0 0 1 10 13.5 3.5 3.5 0 0 1 6.5 10 3.5 3.5 0 0 1 10 6.5zM10 8.3A1.8 1.8 0 0 0 8.3 10 1.8 1.8 0 0 0 10 11.8 1.8 1.8 0 0 0 11.8 10 1.8 1.8 0 0 0 10 8.3z"/>
+        </svg>
+    `;
+    
+    // Add click handler
+    button.addEventListener('click', async () => {
+        button.classList.add('maplibregl-ctrl-geolocate-active');
+        button.disabled = true;
+        
+        try {
+            const position = await getAccurateLocation();
+            
+            // Fly to location
+            map.flyTo({
+                center: [position.longitude, position.latitude],
+                zoom: 16,
+                speed: 1.2,
+                curve: 1.4
+            });
+            
+            // Add/update user location marker
+            const markerEl = document.getElementById('user-location-marker');
+            if (markerEl) {
+                markerEl.remove();
+            }
+            
+            const newMarker = document.createElement('div');
+            newMarker.id = 'user-location-marker';
+            newMarker.className = 'user-location-marker';
+            newMarker.style.cssText = `
+                width: 20px;
+                height: 20px;
+                border-radius: 50%;
+                background: #4285f4;
+                border: 3px solid white;
+                box-shadow: 0 0 10px rgba(66, 133, 244, 0.5);
+            `;
+            
+            new maplibregl.Marker({ element: newMarker })
+                .setLngLat([position.longitude, position.latitude])
+                .addTo(map);
+            
+            // Show accuracy info
+            console.log(`Location found (${position.source}): accuracy ±${Math.round(position.accuracy)}m`);
+            
+        } catch (error) {
+            console.error('Geolocation error:', error);
+            alert('Unable to get your location. Please check permissions.');
+        } finally {
+            button.classList.remove('maplibregl-ctrl-geolocate-active');
+            button.disabled = false;
+        }
+    });
+    
+    geolocateControl.appendChild(button);
+    
+    // Add to map
+    const topRightControls = document.querySelector('.maplibregl-ctrl-top-right');
+    if (topRightControls) {
+        topRightControls.appendChild(geolocateControl);
+    }
+}
+
 // Initialize MapLibre GL map with raster tiles
 function initializeMap() {
+
     // Initialize map with OpenStreetMap raster tiles (no PMTiles needed for now)
     map = new maplibregl.Map({
         container: 'map',
@@ -35,6 +183,9 @@ function initializeMap() {
     
     // Add navigation controls
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    
+    // Add custom geolocation control with Google API fallback
+    addCustomGeolocateControl();
     
     // Add scale control
     map.addControl(new maplibregl.ScaleControl(), 'bottom-left');
@@ -203,6 +354,9 @@ function setupEventListeners() {
     
     // Export/Import
     document.getElementById('export-geojson').addEventListener('click', exportGeoJSON);
+    document.getElementById('import-geojson-btn').addEventListener('click', () => {
+        document.getElementById('import-file').click();
+    });
     document.getElementById('import-file').addEventListener('change', handleImport);
     document.getElementById('clear-all-routes').addEventListener('click', clearAllRoutes);
     
@@ -214,6 +368,72 @@ function setupEventListeners() {
     document.getElementById('toggle-panel').addEventListener('click', toggleControlsPanel);
     document.getElementById('show-panel').addEventListener('click', toggleControlsPanel);
     document.getElementById('toggle-properties-panel').addEventListener('click', togglePropertiesPanel);
+    document.getElementById('show-properties').addEventListener('click', togglePropertiesPanel);
+    
+    // Auto-hide panels on mouse leave
+    const controlsPanel = document.getElementById('controls-panel');
+    const propertiesPanel = document.getElementById('properties-panel');
+    const showPanelBtn = document.getElementById('show-panel');
+    const showPropertiesBtn = document.getElementById('show-properties');
+    
+    controlsPanel.addEventListener('mouseleave', () => {
+        if (!controlsPanel.classList.contains('collapsed')) {
+            toggleControlsPanel();
+        }
+    });
+    
+    // Remove auto-hide on mouseleave for properties panel
+    // It will only hide on click/touch outside
+    
+    // Auto-hide panels on click/touch outside
+    const hideOnOutsideClick = (e) => {
+        const clickedControls = controlsPanel.contains(e.target) || 
+                               document.getElementById('show-panel').contains(e.target) ||
+                               e.target.closest('.maplibregl-ctrl');
+        const clickedProperties = propertiesPanel.contains(e.target) || 
+                                 document.getElementById('show-properties').contains(e.target);
+        
+        if (!clickedControls && !controlsPanel.classList.contains('collapsed')) {
+            toggleControlsPanel();
+        }
+        
+        // Check if properties panel should be hidden
+        if (!clickedProperties && !propertiesPanel.classList.contains('collapsed') && 
+            propertiesPanel.style.display === 'block') {
+            const showTime = propertiesPanel.dataset.showTime;
+            const timeSinceShow = showTime ? Date.now() - parseInt(showTime) : 1000;
+            
+            // Only hide if panel has been visible for at least 500ms
+            if (timeSinceShow > 500) {
+                togglePropertiesPanel();
+            }
+        }
+    };
+    
+    // Listen to both click and touchstart for better mobile support
+    document.addEventListener('click', hideOnOutsideClick);
+    document.addEventListener('touchstart', hideOnOutsideClick);
+    
+    // Hide properties panel on any map interaction (drag, zoom, scroll)
+    map.on('movestart', () => {
+        if (propertiesPanel.style.display === 'block' && !propertiesPanel.classList.contains('collapsed')) {
+            const showTime = propertiesPanel.dataset.showTime;
+            const timeSinceShow = showTime ? Date.now() - parseInt(showTime) : 1000;
+            if (timeSinceShow > 500) {
+                togglePropertiesPanel();
+            }
+        }
+    });
+    
+    map.on('zoomstart', () => {
+        if (propertiesPanel.style.display === 'block' && !propertiesPanel.classList.contains('collapsed')) {
+            const showTime = propertiesPanel.dataset.showTime;
+            const timeSinceShow = showTime ? Date.now() - parseInt(showTime) : 1000;
+            if (timeSinceShow > 500) {
+                togglePropertiesPanel();
+            }
+        }
+    });
     
     // Range input updates
     document.getElementById('line-width').addEventListener('input', (e) => {
@@ -371,17 +591,42 @@ window.editExistingRoute = function(featureId) {
     
     // For LineStrings, enable interactive curve editing
     if (feature.geometry.type === 'LineString') {
-        // Store control points from the saved feature
-        // If the feature has many points (smoothed), we need to extract control points
-        // For simplicity, we'll use all coordinates as control points
-        editPoints = feature.geometry.coordinates.map(c => [...c]);
+        // Check if this route was created with smooth curves
+        const wasSmoothed = feature.properties.controlPoints && feature.properties.controlPoints.length > 0;
+        
+        // Auto-enable curve mode if the route was originally smoothed
+        if (wasSmoothed && !curveMode) {
+            toggleCurveMode();
+        }
+        
+        // Use stored control points if available, otherwise use current coordinates
+        if (feature.properties.controlPoints && feature.properties.controlPoints.length > 0) {
+            editPoints = feature.properties.controlPoints.map(c => [...c]);
+        } else {
+            // Fallback for old routes without stored control points
+            editPoints = feature.geometry.coordinates.map(c => [...c]);
+        }
         
         // Enable interactive editing mode
         enableCurveEditing();
     }
     
-    // Show properties panel with existing values
-    document.getElementById('properties-panel').style.display = 'block';
+    // Show properties panel with existing values using the proper function
+    const propertiesPanel = document.getElementById('properties-panel');
+    propertiesPanel.style.display = 'block';
+    propertiesPanel.classList.remove('collapsed');
+    propertiesPanel.dataset.showTime = Date.now().toString();
+    document.getElementById('show-properties').style.display = 'none';
+    
+    // Update position based on controls panel state
+    const controlsPanel = document.getElementById('controls-panel');
+    const controlsCollapsed = controlsPanel.classList.contains('collapsed');
+    if (controlsCollapsed) {
+        propertiesPanel.classList.add('controls-hidden');
+    } else {
+        propertiesPanel.classList.remove('controls-hidden');
+    }
+    
     document.getElementById('line-name').value = feature.properties.name || '';
     document.getElementById('line-color').value = feature.properties.stroke || feature.properties.fill || '#ff0000';
     document.getElementById('line-width').value = feature.properties['stroke-width'] || 6;
@@ -864,7 +1109,22 @@ function deleteSelectedFeature() {
 
 // Show properties panel
 function showPropertiesPanel(feature) {
-    document.getElementById('properties-panel').style.display = 'block';
+    const propertiesPanel = document.getElementById('properties-panel');
+    const controlsPanel = document.getElementById('controls-panel');
+    const showPropertiesBtn = document.getElementById('show-properties');
+    
+    propertiesPanel.style.display = 'block';
+    propertiesPanel.classList.remove('collapsed');
+    propertiesPanel.dataset.showTime = Date.now().toString();
+    showPropertiesBtn.style.display = 'none';
+    
+    // Update position based on controls panel state
+    const controlsCollapsed = controlsPanel.classList.contains('collapsed');
+    if (controlsCollapsed) {
+        propertiesPanel.classList.add('controls-hidden');
+    } else {
+        propertiesPanel.classList.remove('controls-hidden');
+    };
     
     // Pre-fill if editing existing feature
     const stored = customRoutes.find(f => f.id === feature.id);
@@ -888,7 +1148,9 @@ function saveProperties() {
     let geometry;
     
     // Use edited points if in curve editing mode
+    let controlPoints = null;
     if (isEditingCurve && editPoints.length > 0) {
+        controlPoints = editPoints.map(p => [...p]);
         const coords = curveMode ? smoothLineString(editPoints) : editPoints;
         geometry = {
             type: 'LineString',
@@ -912,6 +1174,7 @@ function saveProperties() {
             
             // Apply curve smoothing if enabled for LineStrings
             if (curveMode && geometry.type === 'LineString') {
+                controlPoints = geometry.coordinates.map(p => [...p]);
                 geometry.coordinates = smoothLineString(geometry.coordinates);
             }
         }
@@ -925,7 +1188,8 @@ function saveProperties() {
             id: currentFeatureId,
             featureId: currentFeatureId,
             name: name,
-            description: description
+            description: description,
+            controlPoints: controlPoints
         }
     };
     
@@ -961,7 +1225,12 @@ function saveProperties() {
 
 // Cancel properties
 function cancelProperties() {
-    document.getElementById('properties-panel').style.display = 'none';
+    const propertiesPanel = document.getElementById('properties-panel');
+    const showPropertiesBtn = document.getElementById('show-properties');
+    
+    propertiesPanel.style.display = 'none';
+    propertiesPanel.classList.remove('collapsed');
+    showPropertiesBtn.style.display = 'none';
     
     // Disable curve editing if active
     if (isEditingCurve) {
@@ -1074,26 +1343,74 @@ function clearAllRoutes() {
 
 // Toggle controls panel
 function toggleControlsPanel() {
-    const panel = document.querySelector('.controls-panel');
-    const button = document.getElementById('toggle-panel');
+    const controlsPanel = document.querySelector('.controls-panel');
+    const propertiesPanel = document.getElementById('properties-panel');
+    const toggleButton = document.getElementById('toggle-panel');
     const showButton = document.getElementById('show-panel');
+    const showPropertiesBtn = document.getElementById('show-properties');
     
-    panel.classList.toggle('collapsed');
-    const isCollapsed = panel.classList.contains('collapsed');
+    controlsPanel.classList.toggle('collapsed');
+    const isCollapsed = controlsPanel.classList.contains('collapsed');
     
-    button.textContent = isCollapsed ? '▶' : '◀';
+    toggleButton.textContent = isCollapsed ? '▶' : '◀';
     showButton.style.display = isCollapsed ? 'block' : 'none';
+    
+    // Update properties panel and button position based on controls panel state
+    const propertiesVisible = propertiesPanel.style.display === 'block';
+    const propertiesCollapsed = propertiesPanel.classList.contains('collapsed');
+    
+    if (isCollapsed) {
+        propertiesPanel.classList.add('controls-hidden');
+        showPropertiesBtn.classList.add('controls-hidden');
+        showPropertiesBtn.classList.remove('controls-visible');
+        // Reset inline styles
+        showPropertiesBtn.style.top = '';
+        propertiesPanel.style.top = '';
+    } else {
+        propertiesPanel.classList.remove('controls-hidden');
+        showPropertiesBtn.classList.remove('controls-hidden');
+        showPropertiesBtn.classList.add('controls-visible');
+        
+        // Calculate actual position based on controls panel height
+        const controlsHeight = controlsPanel.offsetHeight;
+        const controlsTop = parseInt(getComputedStyle(controlsPanel).top) || 10;
+        const newTop = controlsTop + controlsHeight + 10; // 10px gap
+        
+        showPropertiesBtn.style.top = `${newTop}px`;
+        propertiesPanel.style.top = `${newTop}px`;
+    }
+    
+    // Force visibility of properties button if it should be shown
+    if (!propertiesCollapsed && propertiesVisible && showPropertiesBtn.style.display === 'none') {
+        // Properties panel is open, don't show the button
+    } else if (propertiesCollapsed && propertiesVisible) {
+        // Properties panel exists but is collapsed, show the button
+        showPropertiesBtn.style.display = 'flex';
+    }
 }
 
 // Toggle properties panel
 function togglePropertiesPanel() {
     const panel = document.getElementById('properties-panel');
     const button = document.getElementById('toggle-properties-panel');
+    const showPropertiesBtn = document.getElementById('show-properties');
+    const controlsPanel = document.getElementById('controls-panel');
     
     panel.classList.toggle('collapsed');
     const isCollapsed = panel.classList.contains('collapsed');
     
     button.textContent = isCollapsed ? '▼' : '▲';
+    showPropertiesBtn.style.display = isCollapsed ? 'block' : 'none';
+    
+    // Update position based on controls panel state
+    const controlsCollapsed = controlsPanel.classList.contains('collapsed');
+    if (controlsCollapsed) {
+        showPropertiesBtn.classList.add('controls-hidden');
+        showPropertiesBtn.classList.remove('controls-visible');
+    } else {
+        showPropertiesBtn.classList.remove('controls-hidden');
+        showPropertiesBtn.classList.add('controls-visible');
+    }
 }
 
 // Hide loading indicator

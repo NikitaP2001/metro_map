@@ -10,6 +10,9 @@ let customRoutes = [];
 let curveMode = true;
 let isEditingCurve = false;
 let editPoints = [];
+let fixedPoints = new Set(); // Track fixed point indices (e.g., 0, 1, "branch-0-2")
+let pointHoldTimer = null; // Timer for detecting hold gesture
+let pointHoldTarget = null; // Target point for hold gesture
 let draggedPointIndex = null;
 let draggedPointType = null; // 'main' or 'branch'
 let dragStartPoints = null;
@@ -1272,8 +1275,18 @@ function enableCurveEditing() {
             paint: {
                 'circle-radius': 10,
                 'circle-color': '#ffffff',
-                'circle-stroke-color': '#3498db',
-                'circle-stroke-width': 3
+                'circle-stroke-color': [
+                    'case',
+                    ['==', ['get', 'isFixed'], 1],
+                    '#000000',  // Black outline for fixed points
+                    '#3498db'   // Blue outline for normal points
+                ],
+                'circle-stroke-width': [
+                    'case',
+                    ['==', ['get', 'isFixed'], 1],
+                    4,  // Thicker stroke for fixed points
+                    3   // Normal stroke
+                ]
             }
         });
         
@@ -1452,7 +1465,11 @@ function updateCurveDisplay() {
     // Collect all control points (main line + branches)
     const pointFeatures = editPoints.map((coord, index) => ({
         type: 'Feature',
-        properties: { index, type: 'main' },
+        properties: { 
+            index, 
+            type: 'main',
+            isFixed: fixedPoints.has(index) ? 1 : 0  // Add fixed state
+        },
         geometry: {
             type: 'Point',
             coordinates: coord
@@ -1464,13 +1481,15 @@ function updateCurveDisplay() {
         for (let branchIdx = 0; branchIdx < window.currentRouteBranches.length; branchIdx++) {
             const branch = window.currentRouteBranches[branchIdx];
             for (let i = 0; i < branch.points.length; i++) {
+                const pointId = `branch-${branchIdx}-${i}`;
                 pointFeatures.push({
                     type: 'Feature',
                     properties: { 
-                        index: `branch-${branchIdx}-${i}`,
+                        index: pointId,
                         type: 'branch',
                         branchIndex: branchIdx,
-                        pointIndex: i
+                        pointIndex: i,
+                        isFixed: fixedPoints.has(pointId) ? 1 : 0  // Add fixed state
                     },
                     geometry: {
                         type: 'Point',
@@ -1946,10 +1965,28 @@ function onPointMouseDown(e) {
         const pointIndex = props.index;
         const pointType = props.type;
         
-        // Store which point is pressed, but don't activate drag mode yet
-        // Drag will activate on first mousemove
+        // Store which point is pressed
         pendingDragIndex = pointIndex;
         pendingDragType = pointType;
+        
+        // Start timer for hold gesture (500ms to toggle fixed state)
+        pointHoldTimer = setTimeout(() => {
+            // Hold completed - toggle fixed state
+            const pointId = pointType === 'branch' ? pointIndex : pointIndex;
+            if (fixedPoints.has(pointId)) {
+                fixedPoints.delete(pointId);
+            } else {
+                fixedPoints.add(pointId);
+            }
+            
+            // Update display to show fixed point styling
+            updateCurveDisplay();
+            
+            // Clear pending drag since we're toggling fixed state
+            pendingDragIndex = null;
+            pendingDragType = null;
+            pointHoldTimer = null;
+        }, 500);
         
         // Save state for potential drag (both main points and branches)
         dragStartPoints = editPoints.map(c => [...c]);
@@ -1966,6 +2003,12 @@ function onPointMouseDown(e) {
 
 // Mouse move
 function onPointMouseMove(e) {
+    // Cancel hold timer if mouse moves (starting drag)
+    if (pointHoldTimer) {
+        clearTimeout(pointHoldTimer);
+        pointHoldTimer = null;
+    }
+    
     // If mouse is pressed on a point but drag not activated yet, activate it now
     if (pendingDragIndex !== null && draggedPointIndex === null) {
         draggedPointIndex = pendingDragIndex;
@@ -2009,6 +2052,10 @@ function onPointMouseMove(e) {
                     if (idx < 0) break;
                     if (idx === 0) break; // Lock first point of branch
                     
+                    // Skip fixed points
+                    const pointId = `branch-${branchIdx}-${idx}`;
+                    if (fixedPoints.has(pointId)) break;
+                    
                     const influence = Math.pow(0.5, offset);
                     branch.points[idx][0] = startBranch.points[idx][0] + dx * influence;
                     branch.points[idx][1] = startBranch.points[idx][1] + dy * influence;
@@ -2019,6 +2066,10 @@ function onPointMouseMove(e) {
                     const idx = pointIdx + offset;
                     if (idx >= branch.points.length) break;
                     if (idx === branch.points.length - 1) break; // Lock last point
+                    
+                    // Skip fixed points
+                    const pointId = `branch-${branchIdx}-${idx}`;
+                    if (fixedPoints.has(pointId)) break;
                     
                     const influence = Math.pow(0.5, offset);
                     branch.points[idx][0] = startBranch.points[idx][0] + dx * influence;
@@ -2052,6 +2103,9 @@ function onPointMouseMove(e) {
                 // Lock first point - it should never move unless directly dragged
                 if (idx === 0) break;
                 
+                // Skip fixed points
+                if (fixedPoints.has(idx)) break;
+                
                 // Calculate influence: exponential falloff creates more natural chain effect
                 const influence = Math.pow(0.5, offset); // 0.5, 0.25, 0.125...
                 
@@ -2069,6 +2123,9 @@ function onPointMouseMove(e) {
                 // Lock last point - it should never move unless directly dragged
                 if (idx === editPoints.length - 1) break;
                 
+                // Skip fixed points
+                if (fixedPoints.has(idx)) break;
+                
                 // Calculate influence: exponential falloff
                 const influence = Math.pow(0.5, offset);
                 
@@ -2083,6 +2140,12 @@ function onPointMouseMove(e) {
 
 // Mouse up
 function onPointMouseUp() {
+    // Cancel hold timer if mouse released
+    if (pointHoldTimer) {
+        clearTimeout(pointHoldTimer);
+        pointHoldTimer = null;
+    }
+    
     // Clear pending drag if mouse released without moving
     if (pendingDragIndex !== null) {
         pendingDragIndex = null;
@@ -2104,8 +2167,31 @@ function onPointTouchStart(e) {
     
     if (e.features.length > 0) {
         const props = e.features[0].properties;
-        draggedPointIndex = props.index;
-        draggedPointType = props.type;
+        const pointIndex = props.index;
+        const pointType = props.type;
+        
+        draggedPointIndex = pointIndex;
+        draggedPointType = pointType;
+        
+        // Start timer for hold gesture (800ms for touch)
+        pointHoldTimer = setTimeout(() => {
+            // Hold completed - toggle fixed state
+            const pointId = pointType === 'branch' ? pointIndex : pointIndex;
+            if (fixedPoints.has(pointId)) {
+                fixedPoints.delete(pointId);
+            } else {
+                fixedPoints.add(pointId);
+            }
+            
+            // Update display to show fixed point styling
+            updateCurveDisplay();
+            
+            // Clear drag state since we're toggling fixed
+            draggedPointIndex = null;
+            draggedPointType = null;
+            pointHoldTimer = null;
+            map.dragPan.enable();
+        }, 800);
         
         // Save original positions at drag start (both main and branches)
         dragStartPoints = editPoints.map(c => [...c]);
@@ -2126,6 +2212,12 @@ function onPointTouchMove(e) {
     if (draggedPointIndex === null || !dragStartPoints) return;
     
     e.preventDefault();
+    
+    // Cancel hold timer if touch moves (starting drag)
+    if (pointHoldTimer) {
+        clearTimeout(pointHoldTimer);
+        pointHoldTimer = null;
+    }
     
     touchMoved = true; // Mark that touch moved (this is a drag, not a tap)
     
@@ -2234,6 +2326,12 @@ function onPointTouchMove(e) {
 
 // Touch end
 function onPointTouchEnd() {
+    // Cancel hold timer if touch ends
+    if (pointHoldTimer) {
+        clearTimeout(pointHoldTimer);
+        pointHoldTimer = null;
+    }
+    
     if (draggedPointIndex !== null) {
         draggedPointIndex = null;
         draggedPointType = null;
@@ -2460,6 +2558,7 @@ function cancelProperties() {
     currentFeatureId = null;
     window.originalFeatureId = null;  // Clear original ID tracker
     editPoints = [];
+    fixedPoints.clear();  // Clear fixed points
     window.currentRouteBranches = [];  // Clear branches
     
     // Reset form

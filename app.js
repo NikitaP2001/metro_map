@@ -191,13 +191,19 @@ function addCustomGeolocateControl() {
 
 // Initialize MapLibre GL map with raster tiles
 function initializeMap() {
+    // Try to load saved map position from localStorage
+    const savedCenter = localStorage.getItem('mapCenter');
+    const savedZoom = localStorage.getItem('mapZoom');
+    
+    const center = savedCenter ? JSON.parse(savedCenter) : [30.5234, 50.4501]; // Default: Kyiv, Ukraine
+    const zoom = savedZoom ? parseFloat(savedZoom) : 12;
 
     // Initialize map with OpenStreetMap raster tiles (no PMTiles needed for now)
     map = new maplibregl.Map({
         container: 'map',
         style: getMapStyle(),
-        center: [30.5234, 50.4501], // Kyiv, Ukraine
-        zoom: 12,
+        center: center,
+        zoom: zoom,
         attributionControl: true
     });
     
@@ -219,6 +225,14 @@ function initializeMap() {
             trash: false
         },
         styles: getDrawStyles()
+    });
+    
+    // Save map position on move
+    map.on('moveend', () => {
+        const center = map.getCenter();
+        const zoom = map.getZoom();
+        localStorage.setItem('mapCenter', JSON.stringify([center.lng, center.lat]));
+        localStorage.setItem('mapZoom', zoom.toString());
     });
     
     // Map load event
@@ -1545,9 +1559,43 @@ function onPointDoubleClick(e) {
         if (window.currentRouteBranches[branchIdx].points.length <= 1) {
             // Delete entire branch if only one point left
             window.currentRouteBranches.splice(branchIdx, 1);
+            
+            // Remove all fixed points for this branch
+            const updatedFixedPoints = new Set();
+            fixedPoints.forEach(pointId => {
+                if (typeof pointId === 'string' && !pointId.startsWith(`branch-${branchIdx}-`)) {
+                    // Keep fixed points not belonging to this branch
+                    updatedFixedPoints.add(pointId);
+                } else if (typeof pointId === 'number') {
+                    // Keep main line fixed points
+                    updatedFixedPoints.add(pointId);
+                }
+            });
+            fixedPoints = updatedFixedPoints;
         } else {
             // Delete just this point from the branch
             window.currentRouteBranches[branchIdx].points.splice(branchPointIdx, 1);
+            
+            // Update fixed point indices for this branch
+            const updatedFixedPoints = new Set();
+            fixedPoints.forEach(pointId => {
+                if (typeof pointId === 'string' && pointId.startsWith(`branch-${branchIdx}-`)) {
+                    const idx = parseInt(pointId.split('-')[2]);
+                    if (idx === branchPointIdx) {
+                        // Don't add - this fixed point was deleted
+                    } else if (idx > branchPointIdx) {
+                        // Decrement indices after the deleted point
+                        updatedFixedPoints.add(`branch-${branchIdx}-${idx - 1}`);
+                    } else {
+                        // Keep indices before the deleted point
+                        updatedFixedPoints.add(pointId);
+                    }
+                } else {
+                    // Keep all other fixed points
+                    updatedFixedPoints.add(pointId);
+                }
+            });
+            fixedPoints = updatedFixedPoints;
         }
     } else {
         // Handle main line point deletion
@@ -1555,6 +1603,26 @@ function onPointDoubleClick(e) {
         
         const deleteIndex = typeof pointIndex === 'number' ? pointIndex : parseInt(pointIndex);
         editPoints.splice(deleteIndex, 1);
+        
+        // Update fixed point indices after deletion
+        const updatedFixedPoints = new Set();
+        fixedPoints.forEach(pointId => {
+            if (typeof pointId === 'number') {
+                if (pointId === deleteIndex) {
+                    // Don't add - this fixed point was deleted
+                } else if (pointId > deleteIndex) {
+                    // Decrement indices after the deleted point
+                    updatedFixedPoints.add(pointId - 1);
+                } else {
+                    // Keep indices before the deleted point
+                    updatedFixedPoints.add(pointId);
+                }
+            } else {
+                // Branch fixed points are unaffected
+                updatedFixedPoints.add(pointId);
+            }
+        });
+        fixedPoints = updatedFixedPoints;
         
         // Update connection indices in all branches
         if (window.currentRouteBranches) {
@@ -1805,9 +1873,36 @@ function onLineTouchTap(e) {
         if (clickedBranch !== null && minBranchDistance < minMainDistance) {
             // Add point to branch
             window.currentRouteBranches[clickedBranch].points.splice(branchInsertIndex, 0, clickCoords);
+            
+            // Update fixed point indices for this branch (increment if >= insertIndex)
+            const updatedFixedPoints = new Set();
+            fixedPoints.forEach(pointId => {
+                if (typeof pointId === 'string' && pointId.startsWith(`branch-${clickedBranch}-`)) {
+                    const idx = parseInt(pointId.split('-')[2]);
+                    if (idx >= branchInsertIndex) {
+                        updatedFixedPoints.add(`branch-${clickedBranch}-${idx + 1}`);
+                    } else {
+                        updatedFixedPoints.add(pointId);
+                    }
+                } else {
+                    updatedFixedPoints.add(pointId);
+                }
+            });
+            fixedPoints = updatedFixedPoints;
         } else {
             // Add point to main line
             editPoints.splice(mainInsertIndex, 0, clickCoords);
+            
+            // Update fixed point indices (increment if >= insertIndex)
+            const updatedFixedPoints = new Set();
+            fixedPoints.forEach(pointId => {
+                if (typeof pointId === 'number' && pointId >= mainInsertIndex) {
+                    updatedFixedPoints.add(pointId + 1);
+                } else {
+                    updatedFixedPoints.add(pointId);
+                }
+            });
+            fixedPoints = updatedFixedPoints;
             
             // Update connection indices in all branches (increment if >= insertIndex)
             if (window.currentRouteBranches) {
@@ -1939,9 +2034,36 @@ function onLineDoubleClick(e) {
     if (clickedBranch !== null && minBranchDistance < minMainDistance) {
         // Add point to branch
         window.currentRouteBranches[clickedBranch].points.splice(branchInsertIndex, 0, clickCoords);
+        
+        // Update fixed point indices for this branch (increment if >= insertIndex)
+        const updatedFixedPoints = new Set();
+        fixedPoints.forEach(pointId => {
+            if (typeof pointId === 'string' && pointId.startsWith(`branch-${clickedBranch}-`)) {
+                const idx = parseInt(pointId.split('-')[2]);
+                if (idx >= branchInsertIndex) {
+                    updatedFixedPoints.add(`branch-${clickedBranch}-${idx + 1}`);
+                } else {
+                    updatedFixedPoints.add(pointId);
+                }
+            } else {
+                updatedFixedPoints.add(pointId);
+            }
+        });
+        fixedPoints = updatedFixedPoints;
     } else {
         // Add point to main line
         editPoints.splice(mainInsertIndex, 0, clickCoords);
+        
+        // Update fixed point indices (increment if >= insertIndex)
+        const updatedFixedPoints = new Set();
+        fixedPoints.forEach(pointId => {
+            if (typeof pointId === 'number' && pointId >= mainInsertIndex) {
+                updatedFixedPoints.add(pointId + 1);
+            } else {
+                updatedFixedPoints.add(pointId);
+            }
+        });
+        fixedPoints = updatedFixedPoints;
         
         // Update connection indices in all branches (increment if >= insertIndex)
         if (window.currentRouteBranches) {
@@ -2037,6 +2159,50 @@ function onPointMouseMove(e) {
                 // Update the branch point
                 window.currentRouteBranches[branchIdx].points[pointIdx] = newCoords;
                 
+                // If dragging the first point of branch (connection point), also move the main line point
+                if (pointIdx === 0) {
+                    const connectionIdx = window.currentRouteBranches[branchIdx].connectionIndex;
+                    if (typeof connectionIdx === 'number' && connectionIdx >= 0 && connectionIdx < editPoints.length) {
+                        // Skip if main line connection point is fixed
+                        if (!fixedPoints.has(connectionIdx)) {
+                            const oldMainCoords = dragStartPoints[connectionIdx];
+                            const oldBranchCoords = dragStartBranches[branchIdx].points[0];
+                            const dx = newCoords[0] - oldBranchCoords[0];
+                            const dy = newCoords[1] - oldBranchCoords[1];
+                            
+                            // Move the main line connection point with reduced influence for natural following effect
+                            const mainInfluence = 0.5; // Main line follows with half the movement
+                            editPoints[connectionIdx][0] = oldMainCoords[0] + dx * mainInfluence;
+                            editPoints[connectionIdx][1] = oldMainCoords[1] + dy * mainInfluence;
+                            
+                            // Also apply chain effect to adjacent main line points
+                            const chainRadius = 3;
+                            // Move main line points before connection
+                            for (let offset = 1; offset <= chainRadius; offset++) {
+                                const idx = connectionIdx - offset;
+                                if (idx < 0) break;
+                                if (idx === 0) break; // Lock first point
+                                if (fixedPoints.has(idx)) break;
+                                
+                                const influence = mainInfluence * Math.pow(0.5, offset);
+                                editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+                                editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+                            }
+                            // Move main line points after connection
+                            for (let offset = 1; offset <= chainRadius; offset++) {
+                                const idx = connectionIdx + offset;
+                                if (idx >= editPoints.length) break;
+                                if (idx === editPoints.length - 1) break; // Lock last point
+                                if (fixedPoints.has(idx)) break;
+                                
+                                const influence = mainInfluence * Math.pow(0.5, offset);
+                                editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+                                editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+                            }
+                        }
+                    }
+                }
+                
                 // Move adjacent branch points with chain effect
                 const branch = window.currentRouteBranches[branchIdx];
                 const startBranch = dragStartBranches[branchIdx];
@@ -2050,7 +2216,6 @@ function onPointMouseMove(e) {
                 for (let offset = 1; offset <= moveRadius; offset++) {
                     const idx = pointIdx - offset;
                     if (idx < 0) break;
-                    if (idx === 0) break; // Lock first point of branch
                     
                     // Skip fixed points
                     const pointId = `branch-${branchIdx}-${idx}`;
@@ -2059,6 +2224,16 @@ function onPointMouseMove(e) {
                     const influence = Math.pow(0.5, offset);
                     branch.points[idx][0] = startBranch.points[idx][0] + dx * influence;
                     branch.points[idx][1] = startBranch.points[idx][1] + dy * influence;
+                    
+                    // If we moved the first branch point, also move the main line connection point with reduced influence
+                    if (idx === 0) {
+                        const connectionIdx = window.currentRouteBranches[branchIdx].connectionIndex;
+                        if (typeof connectionIdx === 'number' && connectionIdx >= 0 && connectionIdx < editPoints.length) {
+                            const mainInfluence = influence * 0.5; // Further reduce influence for main line
+                            editPoints[connectionIdx][0] = dragStartPoints[connectionIdx][0] + dx * mainInfluence;
+                            editPoints[connectionIdx][1] = dragStartPoints[connectionIdx][1] + dy * mainInfluence;
+                        }
+                    }
                 }
                 
                 // Move points after
@@ -2089,6 +2264,36 @@ function onPointMouseMove(e) {
         // Update the dragged point
         editPoints[pointIndex] = newCoords;
         
+        // Also move any branches connected to the dragged point itself
+        if (window.currentRouteBranches && dragStartBranches) {
+            window.currentRouteBranches.forEach((branch, branchIdx) => {
+                if (branch.connectionIndex === pointIndex && dragStartBranches[branchIdx]) {
+                    const branchFirstPointId = `branch-${branchIdx}-0`;
+                    // Skip if branch first point is fixed
+                    if (!fixedPoints.has(branchFirstPointId)) {
+                        const startBranch = dragStartBranches[branchIdx];
+                        // Move first point of branch with reduced influence for natural following effect
+                        const branchInfluence = 0.5; // Branch follows with half the movement
+                        branch.points[0][0] = startBranch.points[0][0] + dx * branchInfluence;
+                        branch.points[0][1] = startBranch.points[0][1] + dy * branchInfluence;
+                        
+                        // Apply chain effect to subsequent branch points
+                        for (let branchOffset = 1; branchOffset <= 3; branchOffset++) {
+                            if (branchOffset >= branch.points.length) break;
+                            if (branchOffset === branch.points.length - 1) break;
+                            
+                            const branchPointId = `branch-${branchIdx}-${branchOffset}`;
+                            if (fixedPoints.has(branchPointId)) break;
+                            
+                            const branchChainInfluence = branchInfluence * Math.pow(0.5, branchOffset);
+                            branch.points[branchOffset][0] = startBranch.points[branchOffset][0] + dx * branchChainInfluence;
+                            branch.points[branchOffset][1] = startBranch.points[branchOffset][1] + dy * branchChainInfluence;
+                        }
+                    }
+                }
+            });
+        }
+        
         // Move adjacent points like a chain - each point moves based on its distance
         const moveRadius = 3; // How many points on each side to affect
         const isFirstPoint = pointIndex === 0;
@@ -2111,6 +2316,36 @@ function onPointMouseMove(e) {
                 
                 editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
                 editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+                
+                // Also move any branches connected to this point
+                if (window.currentRouteBranches && dragStartBranches) {
+                    window.currentRouteBranches.forEach((branch, branchIdx) => {
+                        if (branch.connectionIndex === idx && dragStartBranches[branchIdx]) {
+                            const branchFirstPointId = `branch-${branchIdx}-0`;
+                            // Skip if branch first point is fixed
+                            if (!fixedPoints.has(branchFirstPointId)) {
+                                const startBranch = dragStartBranches[branchIdx];
+                                // Move first point of branch with reduced influence for natural following effect
+                                const branchInfluence = influence * 0.5; // Further reduce influence for branches
+                                branch.points[0][0] = startBranch.points[0][0] + dx * branchInfluence;
+                                branch.points[0][1] = startBranch.points[0][1] + dy * branchInfluence;
+                                
+                                // Apply chain effect to subsequent branch points
+                                for (let branchOffset = 1; branchOffset <= 3; branchOffset++) {
+                                    if (branchOffset >= branch.points.length) break;
+                                    if (branchOffset === branch.points.length - 1) break;
+                                    
+                                    const branchPointId = `branch-${branchIdx}-${branchOffset}`;
+                                    if (fixedPoints.has(branchPointId)) break;
+                                    
+                                    const branchChainInfluence = branchInfluence * Math.pow(0.5, branchOffset);
+                                    branch.points[branchOffset][0] = startBranch.points[branchOffset][0] + dx * branchChainInfluence;
+                                    branch.points[branchOffset][1] = startBranch.points[branchOffset][1] + dy * branchChainInfluence;
+                                }
+                            }
+                        }
+                    });
+                }
             }
         }
         
@@ -2131,6 +2366,36 @@ function onPointMouseMove(e) {
                 
                 editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
                 editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+                
+                // Also move any branches connected to this point
+                if (window.currentRouteBranches && dragStartBranches) {
+                    window.currentRouteBranches.forEach((branch, branchIdx) => {
+                        if (branch.connectionIndex === idx && dragStartBranches[branchIdx]) {
+                            const branchFirstPointId = `branch-${branchIdx}-0`;
+                            // Skip if branch first point is fixed
+                            if (!fixedPoints.has(branchFirstPointId)) {
+                                const startBranch = dragStartBranches[branchIdx];
+                                // Move first point of branch with reduced influence for natural following effect
+                                const branchInfluence = influence * 0.5; // Further reduce influence for branches
+                                branch.points[0][0] = startBranch.points[0][0] + dx * branchInfluence;
+                                branch.points[0][1] = startBranch.points[0][1] + dy * branchInfluence;
+                                
+                                // Apply chain effect to subsequent branch points
+                                for (let branchOffset = 1; branchOffset <= 3; branchOffset++) {
+                                    if (branchOffset >= branch.points.length) break;
+                                    if (branchOffset === branch.points.length - 1) break;
+                                    
+                                    const branchPointId = `branch-${branchIdx}-${branchOffset}`;
+                                    if (fixedPoints.has(branchPointId)) break;
+                                    
+                                    const branchChainInfluence = branchInfluence * Math.pow(0.5, branchOffset);
+                                    branch.points[branchOffset][0] = startBranch.points[branchOffset][0] + dx * branchChainInfluence;
+                                    branch.points[branchOffset][1] = startBranch.points[branchOffset][1] + dy * branchChainInfluence;
+                                }
+                            }
+                        }
+                    });
+                }
             }
         }
     }
@@ -2237,6 +2502,50 @@ function onPointTouchMove(e) {
                 // Update the branch point
                 window.currentRouteBranches[branchIdx].points[pointIdx] = newCoords;
                 
+                // If dragging the first point of branch (connection point), also move the main line point
+                if (pointIdx === 0) {
+                    const connectionIdx = window.currentRouteBranches[branchIdx].connectionIndex;
+                    if (typeof connectionIdx === 'number' && connectionIdx >= 0 && connectionIdx < editPoints.length) {
+                        // Skip if main line connection point is fixed
+                        if (!fixedPoints.has(connectionIdx)) {
+                            const oldMainCoords = dragStartPoints[connectionIdx];
+                            const oldBranchCoords = dragStartBranches[branchIdx].points[0];
+                            const dx = newCoords[0] - oldBranchCoords[0];
+                            const dy = newCoords[1] - oldBranchCoords[1];
+                            
+                            // Move the main line connection point with reduced influence for natural following effect
+                            const mainInfluence = 0.5; // Main line follows with half the movement
+                            editPoints[connectionIdx][0] = oldMainCoords[0] + dx * mainInfluence;
+                            editPoints[connectionIdx][1] = oldMainCoords[1] + dy * mainInfluence;
+                            
+                            // Also apply chain effect to adjacent main line points
+                            const chainRadius = 3;
+                            // Move main line points before connection
+                            for (let offset = 1; offset <= chainRadius; offset++) {
+                                const idx = connectionIdx - offset;
+                                if (idx < 0) break;
+                                if (idx === 0) break; // Lock first point
+                                if (fixedPoints.has(idx)) break;
+                                
+                                const influence = mainInfluence * Math.pow(0.5, offset);
+                                editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+                                editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+                            }
+                            // Move main line points after connection
+                            for (let offset = 1; offset <= chainRadius; offset++) {
+                                const idx = connectionIdx + offset;
+                                if (idx >= editPoints.length) break;
+                                if (idx === editPoints.length - 1) break; // Lock last point
+                                if (fixedPoints.has(idx)) break;
+                                
+                                const influence = mainInfluence * Math.pow(0.5, offset);
+                                editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
+                                editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+                            }
+                        }
+                    }
+                }
+                
                 // Move adjacent branch points with chain effect
                 const branch = window.currentRouteBranches[branchIdx];
                 const startBranch = dragStartBranches[branchIdx];
@@ -2250,11 +2559,20 @@ function onPointTouchMove(e) {
                 for (let offset = 1; offset <= moveRadius; offset++) {
                     const idx = pointIdx - offset;
                     if (idx < 0) break;
-                    if (idx === 0) break; // Lock first point of branch
                     
                     const influence = Math.pow(0.5, offset);
                     branch.points[idx][0] = startBranch.points[idx][0] + dx * influence;
                     branch.points[idx][1] = startBranch.points[idx][1] + dy * influence;
+                    
+                    // If we moved the first branch point, also move the main line connection point with reduced influence
+                    if (idx === 0) {
+                        const connectionIdx = window.currentRouteBranches[branchIdx].connectionIndex;
+                        if (typeof connectionIdx === 'number' && connectionIdx >= 0 && connectionIdx < editPoints.length) {
+                            const mainInfluence = influence * 0.5; // Further reduce influence for main line
+                            editPoints[connectionIdx][0] = dragStartPoints[connectionIdx][0] + dx * mainInfluence;
+                            editPoints[connectionIdx][1] = dragStartPoints[connectionIdx][1] + dy * mainInfluence;
+                        }
+                    }
                 }
                 
                 // Move points after
@@ -2281,6 +2599,36 @@ function onPointTouchMove(e) {
         // Update the dragged point
         editPoints[pointIndex] = newCoords;
         
+        // Also move any branches connected to the dragged point itself
+        if (window.currentRouteBranches && dragStartBranches) {
+            window.currentRouteBranches.forEach((branch, branchIdx) => {
+                if (branch.connectionIndex === pointIndex && dragStartBranches[branchIdx]) {
+                    const branchFirstPointId = `branch-${branchIdx}-0`;
+                    // Skip if branch first point is fixed
+                    if (!fixedPoints.has(branchFirstPointId)) {
+                        const startBranch = dragStartBranches[branchIdx];
+                        // Move first point of branch with reduced influence for natural following effect
+                        const branchInfluence = 0.5; // Branch follows with half the movement
+                        branch.points[0][0] = startBranch.points[0][0] + dx * branchInfluence;
+                        branch.points[0][1] = startBranch.points[0][1] + dy * branchInfluence;
+                        
+                        // Apply chain effect to subsequent branch points
+                        for (let branchOffset = 1; branchOffset <= 3; branchOffset++) {
+                            if (branchOffset >= branch.points.length) break;
+                            if (branchOffset === branch.points.length - 1) break;
+                            
+                            const branchPointId = `branch-${branchIdx}-${branchOffset}`;
+                            if (fixedPoints.has(branchPointId)) break;
+                            
+                            const branchChainInfluence = branchInfluence * Math.pow(0.5, branchOffset);
+                            branch.points[branchOffset][0] = startBranch.points[branchOffset][0] + dx * branchChainInfluence;
+                            branch.points[branchOffset][1] = startBranch.points[branchOffset][1] + dy * branchChainInfluence;
+                        }
+                    }
+                }
+            });
+        }
+        
         // Move adjacent points like a chain - each point moves based on its distance
         const moveRadius = 3; // How many points on each side to affect
         const isFirstPoint = pointIndex === 0;
@@ -2295,11 +2643,44 @@ function onPointTouchMove(e) {
                 // Lock first point - it should never move unless directly dragged
                 if (idx === 0) break;
                 
+                // Skip fixed points
+                if (fixedPoints.has(idx)) break;
+                
                 // Calculate influence: exponential falloff creates more natural chain effect
                 const influence = Math.pow(0.5, offset);
                 
                 editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
                 editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+                
+                // Also move any branches connected to this point
+                if (window.currentRouteBranches && dragStartBranches) {
+                    window.currentRouteBranches.forEach((branch, branchIdx) => {
+                        if (branch.connectionIndex === idx && dragStartBranches[branchIdx]) {
+                            const branchFirstPointId = `branch-${branchIdx}-0`;
+                            // Skip if branch first point is fixed
+                            if (!fixedPoints.has(branchFirstPointId)) {
+                                const startBranch = dragStartBranches[branchIdx];
+                                // Move first point of branch with reduced influence for natural following effect
+                                const branchInfluence = influence * 0.5; // Further reduce influence for branches
+                                branch.points[0][0] = startBranch.points[0][0] + dx * branchInfluence;
+                                branch.points[0][1] = startBranch.points[0][1] + dy * branchInfluence;
+                                
+                                // Apply chain effect to subsequent branch points
+                                for (let branchOffset = 1; branchOffset <= 3; branchOffset++) {
+                                    if (branchOffset >= branch.points.length) break;
+                                    if (branchOffset === branch.points.length - 1) break;
+                                    
+                                    const branchPointId = `branch-${branchIdx}-${branchOffset}`;
+                                    if (fixedPoints.has(branchPointId)) break;
+                                    
+                                    const branchChainInfluence = branchInfluence * Math.pow(0.5, branchOffset);
+                                    branch.points[branchOffset][0] = startBranch.points[branchOffset][0] + dx * branchChainInfluence;
+                                    branch.points[branchOffset][1] = startBranch.points[branchOffset][1] + dy * branchChainInfluence;
+                                }
+                            }
+                        }
+                    });
+                }
             }
         }
         
@@ -2312,11 +2693,44 @@ function onPointTouchMove(e) {
                 // Lock last point - it should never move unless directly dragged
                 if (idx === editPoints.length - 1) break;
                 
+                // Skip fixed points
+                if (fixedPoints.has(idx)) break;
+                
                 // Calculate influence: exponential falloff
                 const influence = Math.pow(0.5, offset);
                 
                 editPoints[idx][0] = dragStartPoints[idx][0] + dx * influence;
                 editPoints[idx][1] = dragStartPoints[idx][1] + dy * influence;
+                
+                // Also move any branches connected to this point
+                if (window.currentRouteBranches && dragStartBranches) {
+                    window.currentRouteBranches.forEach((branch, branchIdx) => {
+                        if (branch.connectionIndex === idx && dragStartBranches[branchIdx]) {
+                            const branchFirstPointId = `branch-${branchIdx}-0`;
+                            // Skip if branch first point is fixed
+                            if (!fixedPoints.has(branchFirstPointId)) {
+                                const startBranch = dragStartBranches[branchIdx];
+                                // Move first point of branch with reduced influence for natural following effect
+                                const branchInfluence = influence * 0.5; // Further reduce influence for branches
+                                branch.points[0][0] = startBranch.points[0][0] + dx * branchInfluence;
+                                branch.points[0][1] = startBranch.points[0][1] + dy * branchInfluence;
+                                
+                                // Apply chain effect to subsequent branch points
+                                for (let branchOffset = 1; branchOffset <= 3; branchOffset++) {
+                                    if (branchOffset >= branch.points.length) break;
+                                    if (branchOffset === branch.points.length - 1) break;
+                                    
+                                    const branchPointId = `branch-${branchIdx}-${branchOffset}`;
+                                    if (fixedPoints.has(branchPointId)) break;
+                                    
+                                    const branchChainInfluence = branchInfluence * Math.pow(0.5, branchOffset);
+                                    branch.points[branchOffset][0] = startBranch.points[branchOffset][0] + dx * branchChainInfluence;
+                                    branch.points[branchOffset][1] = startBranch.points[branchOffset][1] + dy * branchChainInfluence;
+                                }
+                            }
+                        }
+                    });
+                }
             }
         }
     }

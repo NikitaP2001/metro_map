@@ -2771,7 +2771,6 @@ function onPointTouchEnd() {
         map.dragPan.enable();
     }
 }
-}
 
 // Handle draw update
 function handleDrawUpdate(e) {

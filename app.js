@@ -2435,8 +2435,9 @@ function onPointTouchStart(e) {
         const pointIndex = props.index;
         const pointType = props.type;
         
-        draggedPointIndex = pointIndex;
-        draggedPointType = pointType;
+        // Store touch info in pending state (not drag state yet)
+        pendingDragIndex = pointIndex;
+        pendingDragType = pointType;
         
         // Start timer for hold gesture (800ms for touch)
         pointHoldTimer = setTimeout(() => {
@@ -2451,14 +2452,14 @@ function onPointTouchStart(e) {
             // Update display to show fixed point styling
             updateCurveDisplay();
             
-            // Clear drag state since we're toggling fixed
-            draggedPointIndex = null;
-            draggedPointType = null;
+            // Clear pending state
+            pendingDragIndex = null;
+            pendingDragType = null;
             pointHoldTimer = null;
             map.dragPan.enable();
         }, 800);
         
-        // Save original positions at drag start (both main and branches)
+        // Save original positions (will be used if this becomes a drag)
         dragStartPoints = editPoints.map(c => [...c]);
         if (window.currentRouteBranches) {
             dragStartBranches = window.currentRouteBranches.map(b => ({
@@ -2474,15 +2475,23 @@ function onPointTouchStart(e) {
 
 // Touch move
 function onPointTouchMove(e) {
-    if (draggedPointIndex === null || !dragStartPoints) return;
-    
-    e.preventDefault();
-    
-    // Cancel hold timer if touch moves (starting drag)
-    if (pointHoldTimer) {
+    // First check if we have a pending touch (not yet a drag)
+    if (pendingDragIndex !== null && pointHoldTimer) {
+        // User moved while hold timer active - activate drag mode
+        draggedPointIndex = pendingDragIndex;
+        draggedPointType = pendingDragType;
+        pendingDragIndex = null;
+        pendingDragType = null;
+        
+        // Cancel hold timer since this is now a drag
         clearTimeout(pointHoldTimer);
         pointHoldTimer = null;
     }
+    
+    // Now check if we're in active drag mode
+    if (draggedPointIndex === null || !dragStartPoints) return;
+    
+    e.preventDefault();
     
     touchMoved = true; // Mark that touch moved (this is a drag, not a tap)
     
@@ -2746,6 +2755,7 @@ function onPointTouchEnd() {
         pointHoldTimer = null;
     }
     
+    // Clear both active drag and pending touch states
     if (draggedPointIndex !== null) {
         draggedPointIndex = null;
         draggedPointType = null;
@@ -2754,6 +2764,13 @@ function onPointTouchEnd() {
         map.dragPan.enable();
         // Don't reset touchMoved here - let the tap handler check it
     }
+    
+    if (pendingDragIndex !== null) {
+        pendingDragIndex = null;
+        pendingDragType = null;
+        map.dragPan.enable();
+    }
+}
 }
 
 // Handle draw update

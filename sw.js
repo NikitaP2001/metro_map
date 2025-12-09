@@ -1,7 +1,7 @@
 // Metro Map Editor - Service Worker
 // Enables offline functionality with cached tiles and app files
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v1.0.1';
 const CACHE_NAME = `metro-map-${CACHE_VERSION}`;
 const TILE_CACHE_NAME = `metro-tiles-${CACHE_VERSION}`;
 const MAX_TILE_CACHE_SIZE = 500; // Maximum number of tiles to cache
